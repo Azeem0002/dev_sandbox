@@ -446,6 +446,701 @@ def parse_conflict_strategy(value: str) -> Validated[ConflictStrategy]:
     except Exception:
         return Validated(None, [ValidationError(f"Invalid input")])
 
+
+# =============================================================================
+# CONFIGURATIONS & DOMAIN MODELS
+# =============================================================================
+
+MAX_FILES: int = 10000
+BACKUP_DIR: Path = Path.home() / ".file_organizer" / "backups"
+LOG_DIR: Path = Path.home() / ".file_organizer" / "logs"
+
+
+class ConflictStrategy(Enum):
+    """Strategies for handling file name conflicts."""
+    SKIP = "skip"        # Skip conflicted files
+    RENAME = "rename"    # Rename conflicted files
+    OVERWRITE = "overwrite"  # Overwrite target files
+    DELETE = "delete"    # Delete source conflicted files
+
+
+@dataclass
+class FileInfo:
+    """Metadata container for a single file."""
+    path: Path           # Full path to file
+    name: str            # File name with extension
+    stem: str            # File name without extension
+    suffix: str          # Extension with dot
+    category: str        # Directory derived from suffix
+    size: int = 0        # File size in bytes
+    permission: int | None = None  # File permissions
+    created: datetime | None = None  # Creation timestamp
+    modified: datetime | None = None  # Modification timestamp
+
+
+@dataclass
+class OrganizationResult:
+    """Results container for organization operations."""
+    organized: int = 0                     # Files successfully organized
+    skipped: int = 0                       # Files skipped (already in correct location)
+    conflicts: int = 0                     # Files with name conflicts
+    errors: int = 0                        # Files that failed with errors
+    created_categories_count: int = 0      # New categories created
+    operations: List[Tuple[Path, Path]] = field(default_factory=list)  # Move operations
+    discovered_categories: Set[str] = field(default_factory=set)  # All categories found
+
+# =============================================================================
+# CORE UTILITIES - Single responsibility functions
+# =============================================================================
+
+def setup_logging() -> None:
+    """Setup dual logging: console for users, file for debugging."""
+    file_level = "DEBUG"
+    user_level = "INFO"
+    
+    logger.remove()
+    
+    # Console logging (user-friendly)
+    logger.add(
+        sink=sys.stderr,
+        level=user_level,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+        colorize=True,
+        backtrace=True,
+        catch=True
+    )
+    
+    # File logging (detailed, for debugging)
+    log_file = LOG_DIR / "organizer.log"
+    logger.add(
+        sink=str(log_file),
+        level=file_level,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}.{function}:{line} | {message}",
+        rotation="10 MB",
+        retention="30 days",
+        compression="gz",
+        enqueue=True,
+        backtrace=True,
+        catch=True,
+    )
+
+
+def ensure_directories_exist() -> None:
+    """Create required directories if they don't exist."""
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Directories ensured: {BACKUP_DIR}, {LOG_DIR}")
+    except PermissionError as e:
+        logger.error(
+            f"Cannot create directories. "
+            f"Check write permissions for: {BACKUP_DIR.parent} and {LOG_DIR}"
+        )
+        raise PermissionError(f"Directory creation failed: {e}")
+
+
+def extract_file_category(
+    file_path: Path, 
+    *, 
+    custom_mapping: dict[str, str] | None = None
+) -> str:
+    """
+    Generate safe directory name from file extension with compound extension support.
+    
+    FEATURES:
+    - Handles compound extensions (.tar.gz, .tar.bz2)
+    - Custom mapping overrides built-in categories
+    - Sanitizes unsafe characters in category names
+    - Special handling for hidden files
+    """
+    
+    # Handle None case
+    if custom_mapping is None:
+        custom_mapping = {}
+    
+    # Hidden files
+    if file_path.name.startswith("."):
+        return "hidden"
+    
+    # Get all suffixes for compound extensions
+    file_suffixes = file_path.suffixes  # Returns ['.tar', '.gz'] for .tar.gz
+    if not file_suffixes:
+        return "no_extension"
+    
+    # Build full extension (e.g., '.tar.gz') and last extension (e.g., '.gz')
+    # YOUR VERSION - SIMPLEST AND BEST
+    compound_extension = ''.join(file_suffixes).lower().replace('.', '')
+    last_extension = file_suffixes[-1].lower() if file_suffixes else ""
+    
+    # Priority 1: custom mapping (check full extension first, then last)
+    if compound_extension in custom_mapping:
+        return custom_mapping[compound_extension]
+    if last_extension in custom_mapping:
+        return custom_mapping[last_extension]
+    
+    # Built-in categories with compound extension support
+    CATEGORY_MAP = {
+        # Media
+        ".mp4": "movies", ".avi": "movies", ".mkv": "movies", 
+        ".mov": "movies", ".wmv": "movies", ".flv": "movies",
+        ".webm": "movies", ".m4v": "movies",
+        
+        ".mp3": "music", ".wav": "music", ".flac": "music",
+        ".m4a": "music", ".ogg": "music", ".aac": "music",
+        ".wma": "music", ".opus": "music",
+        
+        ".jpg": "images", ".jpeg": "images", ".png": "images",
+        ".gif": "images", ".webp": "images", ".bmp": "images",
+        ".tiff": "images", ".svg": "images", ".ico": "images",
+        ".heic": "images", ".raw": "images",
+        
+        # Documents
+        ".pdf": "documents",
+        ".doc": "documents", ".docx": "documents",
+        ".txt": "documents", ".rtf": "documents",
+        ".odt": "documents", ".md": "documents",
+        ".pages": "documents",
+        
+        # Spreadsheets
+        ".xls": "spreadsheets", ".xlsx": "spreadsheets",
+        ".ods": "spreadsheets", ".csv": "spreadsheets",
+        
+        # Presentations
+        ".ppt": "presentations", ".pptx": "presentations",
+        ".odp": "presentations", ".key": "presentations",
+        
+        # Archives - singles and compounds
+        ".zip": "archives", ".tar": "archives",
+        ".rar": "archives", ".7z": "archives", 
+        ".bz2": "archives", ".gz": "archives",
+        
+        # Compound archives
+        ".tar.gz": "archives", ".tar.bz2": "archives", 
+        ".tar.xz": "archives", ".tgz": "archives",
+        
+        # Code
+        ".py": "code", ".js": "code", ".java": "code",
+        ".cpp": "code", ".c": "code", ".html": "code",
+        ".css": "code", ".json": "code", ".xml": "code",
+        ".yaml": "code", ".yml": "code", ".toml": "code",
+        ".ini": "code", ".cfg": "code", ".conf": "code",
+        
+        # Executables
+        ".exe": "executables", ".msi": "executables",
+        ".app": "executables", ".sh": "executables",
+        ".bat": "executables", ".cmd": "executables",
+    }
+    
+    # Priority 2: Built-in mapping (check full compound extension first, then last)
+    if compound_extension in CATEGORY_MAP:
+        return CATEGORY_MAP[compound_extension]
+    if last_extension in CATEGORY_MAP:
+        return CATEGORY_MAP[last_extension]
+    
+    # Fallback: For unknown extensions
+    if len(file_suffixes) > 1:
+        # Compound extension: join without dots and sanitize
+        base_category = ''.join(s.lstrip('.') for s in file_suffixes)
+    else:
+        # Single extension
+        base_category = last_extension.lstrip(".")
+    
+    # Sanitize to make safe folder name
+    category = re.sub(r"[^\w\-]", "_", base_category)
+    
+    # Ensure non-empty category
+    if not category or category.isspace():
+        return "misc"
+    return category.strip()
+
+
+def gather_file_metadata(file_path: Path) -> FileInfo:
+    """Extract comprehensive metadata from a file."""
+    
+    # Assert operational invariants
+    if not file_path.is_file():
+        raise ValidationError(f"Not a file: {file_path}")
+    
+    try:
+        stat = file_path.stat()
+    except (PermissionError, OSError) as e:
+        raise ValidationError(f"Cannot read file metadata: {e}") from e
+    
+    return FileInfo(
+        path=file_path,
+        name=file_path.name,
+        stem=file_path.stem,
+        suffix=file_path.suffix,
+        category=extract_file_category(file_path),
+        size=stat.st_size,
+        permission=stat.st_mode,
+        created=datetime.fromtimestamp(stat.st_ctime),
+        modified=datetime.fromtimestamp(stat.st_mtime),
+    )
+
+
+def generate_unique_filename(target_path: Path, max_attempts: int = 1000) -> Path:
+    """
+    Create unique filename by appending counter.
+    
+    Example: "file.txt" → "file_1.txt" → "file_2.txt"
+    """
+    counter = 1
+    parent = target_path.parent
+    stem, suffix = target_path.stem, target_path.suffix
+    
+    while counter <= max_attempts:
+        new_name = parent / f"{stem}_{counter}{suffix}"
+        if not new_name.exists():
+            return new_name
+        counter += 1
+    
+    raise RuntimeError(f"Could not generate unique name after {max_attempts} attempts")
+
+# =============================================================================
+# FILE COPY UTILITIES - Secure with progress tracking
+# =============================================================================
+
+def _copy_single_file_secure(src_file: Path, src_root: Path, dst_root: Path) -> int:
+    """
+    Copy a single file with retry logic and comprehensive error handling.
+    
+    SECURITY FEATURES:
+    1. Verifies file is under source root (prevents symlink escapes)
+    2. Retry logic for transient errors
+    3. Size verification after copy
+    4. Cleanup of partial files on failure
+    
+    DESIGN:
+        - Retry up to 3 times with exponential backoff
+        - Verify copy succeeded by checking file size
+        - Preserve all file metadata (timestamps, permissions)
+    """
+    # Calculate destination path while preserving directory structure
+    try:
+        relative_path = src_file.relative_to(src_root)
+    except ValueError:
+        raise ValidationError(
+            f"Security violation: File {src_file} is not under source root {src_root}"
+        )
+    
+    # Construct full destination path
+    dest_file = dst_root / relative_path
+    
+    # Ensure parent directory exists
+    dest_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Get source file size for verification
+    try:
+        file_size = src_file.stat().st_size
+    except OSError as e:
+        raise PermissionError(f"Cannot read source file {src_file.name}: {e}")
+    
+    # Retry loop for transient errors
+    last_error = None
+    for attempt in range(3):
+        try:
+            # Copy with metadata preservation
+            shutil.copy2(src_file, dest_file)
+            
+            # Verification: Ensure copy succeeded completely
+            if not dest_file.exists():
+                raise OSError(f"Target file not created after copy operation")
+            
+            # Verify copied file size matches source
+            copied_size = dest_file.stat().st_size
+            if copied_size != file_size:
+                # Partial copy detected - delete and retry
+                dest_file.unlink(missing_ok=True)
+                raise OSError(
+                    f"Copy incomplete: {copied_size:,} of {file_size:,} bytes transferred"
+                )
+            
+            # SUCCESS: File copied completely and verified
+            return file_size
+            
+        except (OSError, IOError, PermissionError) as e:
+            last_error = e
+            
+            # Cleanup: Remove any partial file
+            dest_file.unlink(missing_ok=True)
+            
+            if attempt < 2:  # Not the last attempt
+                # Exponential backoff
+                sleep_time = 0.1 * ((attempt + 1) ** 2)
+                logger.debug(
+                    f"Retry {attempt + 1}/3 for {src_file.name}: "
+                    f"{e}, waiting {sleep_time:.1f}s"
+                )
+                time.sleep(sleep_time)
+            else:
+                logger.debug(f"Final copy attempt failed for {src_file.name}: {e}")
+    
+    # All retry attempts failed
+    raise last_error or OSError(f"Unknown error copying {src_file.name}")
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+
+def _validate_paths(src_dir: Path, dst_dir: Path) -> None:
+    """Validate source and destination directories."""
+    source_validation = parse_backup_source(src_dir)
+    if source_validation.is_invalid:
+        error_messages = "\n".join(str(e) for e in source_validation.errors)
+        raise ValidationError(f"Invalid source directory:\n{error_messages}")
+    
+    dest_validation = parse_backup_destination(dst_dir)
+    if dest_validation.is_invalid:
+        error_messages = "\n".join(str(e) for e in dest_validation.errors)
+        raise ValidationError(f"Invalid destination directory:\n{error_messages}")
+    
+    logger.debug(f"Security validation passed: {src_dir} → {dst_dir}")
+
+
+def copy_directory_with_progress_secure(src_dir: Path, dst_dir: Path) -> int:
+    """
+    Securely copy directory contents with streaming architecture.
+    """
+    
+    # =========================================================================
+    # PHASE 1: VALIDATION
+    # =========================================================================
+    _validate_paths(src_dir, dst_dir)
+
+    
+    # =========================================================================
+    # PHASE 2: ESTIMATION
+    # =========================================================================
+    is_terminal = sys.stderr.isatty()
+    min_files = _estimate_files(src_dir) if is_terminal else 0
+    
+    if min_files == 0 and is_terminal:
+        logger.info("No files found")
+        return 0
+    if is_terminal:
+        logger.info(f"Found at least {min_files:,} files")
+    
+    # =========================================================================
+    # PHASE 3: COPY
+    # =========================================================================
+    logger.info(f"Starting streaming copy from {src_dir} to {dst_dir}")
+    start_time = datetime.now()
+    
+    # Check for tqdm
+    has_tqdm = _check_tqdm(is_terminal)
+    
+    # Initialize counters
+    stats = {
+        'total_items': 0,
+        'processed': 0,
+        'copied': 0,
+        'skipped': 0,
+        'bytes': 0,
+    }
+    
+    try:
+        if has_tqdm and min_files > 0:
+            _copy_with_tqdm(src_dir, dst_dir, min_files, start_time, stats)
+        else:
+            _copy_simple(src_dir, dst_dir, min_files, start_time, stats, is_terminal)
+        
+        if stats['processed'] == 0:
+            logger.info(f"No files found in {src_dir}")
+            return 0
+            
+    except KeyboardInterrupt:
+        _handle_interrupt(start_time, stats)
+        raise
+    except Exception as e:
+        _handle_error(start_time, e)
+        raise
+    
+    # =========================================================================
+    # PHASE 4: REPORTING
+    # =========================================================================
+    _report_results(start_time, stats, src_dir, dst_dir)
+    
+    return stats['copied']
+
+
+# =============================================================================
+# ESTIMATION
+# =============================================================================
+
+def _estimate_files(directory: Path, limit: int = 1000) -> int:
+    """Return number of files found up to limit."""
+    count = 0
+    for item in directory.rglob("*"):
+        if item.is_file():
+            count += 1
+            if count >= limit:
+                break
+    return count
+
+
+# =============================================================================
+# PROGRESS UI
+# =============================================================================
+
+def _check_tqdm(is_terminal: bool) -> bool:
+    """Check if tqdm is available and should be used."""
+    if not is_terminal:
+        logger.debug("tqdm not available")
+    return False
+    # or return tqdm
+
+def _update_display(stats: dict, start: datetime, min_files: int) -> str:
+    """Generate progress display string."""
+    elapsed = (datetime.now() - start).total_seconds()
+    rate = stats['processed'] / elapsed if elapsed > 0 else 0
+    mb = stats['bytes'] / (1024 * 1024)
+    return f"📁 {stats['copied']:,} / at least {min_files:,} | {mb:.0f} MB | {rate:.0f}/sec"
+
+
+# =============================================================================
+# SAFETY
+# =============================================================================
+
+def _check_safety(total_items: int, start: datetime) -> None:
+    """Raise ValidationError if safety limit exceeded."""
+    SAFETY_LIMIT = 1_000_000
+    if total_items <= SAFETY_LIMIT:
+        return
+    elapsed = (datetime.now() - start).total_seconds()
+    raise ValidationError(
+        f"Safety limit exceeded: {total_items:,} > {SAFETY_LIMIT:,} items.\n"
+        f"Processed for {elapsed:.1f}s before hitting limit."
+    )
+
+
+# =============================================================================
+# COPY OPERATIONS
+# =============================================================================
+
+def _copy_one_file(item: Path, src_dir: Path, dst_dir: Path, stats: dict) -> None:
+    """Copy a single file, update stats."""
+    try:
+        bytes_copied = _copy_single_file_secure(item, src_dir, dst_dir)
+        stats['copied'] += 1
+        stats['bytes'] += bytes_copied
+    except Exception as e:
+        logger.warning(f"Failed to copy {item.name}: {e}")
+        stats['skipped'] += 1
+    finally:
+        stats['processed'] += 1
+
+
+def _copy_with_tqdm(src_dir: Path, dst_dir: Path, min_files: int, 
+                    start: datetime, stats: dict) -> None:
+    """Copy with tqdm progress bar."""
+    
+    with tqdm(total=min_files, desc="📁 Copying", unit="files") as pbar:
+        for item in src_dir.rglob("*"):
+            stats['total_items'] += 1
+            _check_safety(stats['total_items'], start)
+            
+            if not item.is_file():
+                continue
+            
+            _copy_one_file(item, src_dir, dst_dir, stats)
+            pbar.update(1)
+            
+            if stats['processed'] % 100 == 0:
+                pbar.set_description(_update_display(stats, start, min_files))
+
+
+def _copy_simple(src_dir: Path, dst_dir: Path, min_files: int,
+                 start: datetime, stats: dict, is_terminal: bool) -> None:
+    """Copy with simple print progress."""
+    for item in src_dir.rglob("*"):
+        stats['total_items'] += 1
+        _check_safety(stats['total_items'], start)
+        
+        if not item.is_file():
+            continue
+        
+        _copy_one_file(item, src_dir, dst_dir, stats)
+        
+        if is_terminal and stats['copied'] % 100 == 0:
+            print(f"\r{_update_display(stats, start, min_files)}", 
+                  end="", flush=True)
+    
+    if is_terminal and stats['copied'] > 0:
+        print()
+
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+
+def _handle_interrupt(start: datetime, stats: dict) -> None:
+    """Handle KeyboardInterrupt gracefully."""
+    elapsed = (datetime.now() - start).total_seconds()
+    logger.warning(
+        f"\n⚠️  Copy interrupted after {elapsed:.1f}s\n"
+        f"   Copied: {stats['copied']:,} files\n"
+        f"   Failed: {stats['skipped']:,} files"
+    )
+
+
+def _handle_error(start: datetime, error: Exception) -> None:
+    """Handle general errors."""
+    elapsed = (datetime.now() - start).total_seconds()
+    logger.error(f"Copy failed after {elapsed:.1f}s: {error}")
+
+
+# =============================================================================
+# REPORTING
+# =============================================================================
+
+def _report_results(start: datetime, stats: dict, src_dir: Path, dst_dir: Path) -> None:
+    """Log final results and metrics."""
+    elapsed = (datetime.now() - start).total_seconds()
+    gb = stats['bytes'] / (1024 * 1024 * 1024)
+    rate = stats['copied'] / elapsed if elapsed > 0 else 0
+    byte_rate = stats['bytes'] / elapsed if elapsed > 0 else 0
+    
+    # Success message
+    logger.success(
+        f"\n{'='*60}\n"
+        f"✅ COPY COMPLETE\n"
+        f"{'='*60}\n"
+        f"   Files copied:  {stats['copied']:,}\n"
+        f"   Files failed:  {stats['skipped']:,}\n"
+        f"   Total data:    {gb:.2f} GB\n"
+        f"   Copy time:     {elapsed:.1f}s\n"
+        f"   Speed:         {rate:.1f} files/sec, {byte_rate/1024/1024:.1f} MB/sec"
+    )
+    
+    # Security audit
+    logger.debug(
+        f"\nSECURITY AUDIT LOG\n"
+        f"  Source: {src_dir} (READ permission)\n"
+        f"  Destination: {dst_dir} (WRITE permission)\n"
+        f"  Items scanned: {stats['total_items']:,}\n"
+        f"  Files copied: {stats['copied']:,}\n"
+        f"  Files failed: {stats['skipped']:,}"
+    )
+    
+    # Failure analysis
+    _report_failures(stats)
+
+
+def _report_failures(stats: dict) -> None:
+    """Log warnings for high failure rates."""
+    if stats['skipped'] == 0 or stats['processed'] == 0:
+        return
+    
+    failure_rate = (stats['skipped'] / stats['processed']) * 100
+    
+    if failure_rate > 20:
+        logger.error(
+            f"\n⚠️  HIGH FAILURE RATE: {failure_rate:.1f}% ({stats['skipped']:,} files)\n"
+            f"   Check: permissions, disk space, file locks"
+        )
+    elif failure_rate > 5:
+        logger.warning(f"\n⚠️  {failure_rate:.1f}% failed ({stats['skipped']:,} files)")
+    else:
+        logger.info(f"\nNote: {stats['skipped']:,} files skipped")
+
+# =============================================================================
+# COMPRESSION UTILITIES
+# =============================================================================
+
+def compress_to_zip(source_dir: Path, archive_path: Path) -> bool:
+    """Compress directory to ZIP format."""
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for file_path in source_dir.rglob("*"):
+                if file_path.is_file():
+                    arcname = file_path.relative_to(source_dir)
+                    zipf.write(file_path, arcname)
+        return True
+    except Exception as e:
+        logger.error(f"ZIP compression failed: {e}")
+        if archive_path.exists():
+            archive_path.unlink(missing_ok=True)
+        return False
+
+
+def compress_to_tar_gz(source_dir: Path, archive_path: Path) -> bool:
+    """Compress directory to TAR.GZ format."""
+    try:
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(source_dir, arcname=source_dir.name)
+        return True
+    except Exception as e:
+        logger.error(f"TAR.GZ compression failed: {e}")
+        if archive_path.exists():
+            archive_path.unlink(missing_ok=True)
+        return False
+
+# =============================================================================
+# DECORATORS - Cross-cutting concerns
+# =============================================================================
+
+def with_logging(func: Callable) -> Callable:
+    """Decorator for automatic logging of function entry and exit."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        logger.debug(f"Starting {func.__name__}")
+        try:
+            result = func(*args, **kwargs)
+            logger.debug(f"Completed {func.__name__}")
+            return result
+        except Exception as e:
+            logger.error(f"{func.__name__} failed: {e}")
+            raise
+    return wrapper
+
+
+def with_retry(max_attempts: int = 3):
+    """Decorator for automatic retry logic with exponential backoff."""
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_attempts):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_attempts - 1:
+                        logger.warning(f"Attempt {attempt + 1} failed, retrying...")
+            raise last_exception or RuntimeError("All retry attempts failed")
+        return wrapper
+    return decorator
+
+
+@contextmanager
+def with_dry_run(enabled: bool = True):
+    """Context manager for dry-run mode (no actual changes)."""
+    if enabled:
+        logger.info("🧪 DRY RUN MODE - No changes will be made")
+        original_move = shutil.move
+        original_mkdir = Path.mkdir
+        
+        def dry_move(src, dst_dir):
+            logger.info(f"WOULD move: {src} → {dst_dir}")
+            return dst_dir
+        
+        def dry_mkdir(self, *args, **kwargs):
+            logger.info(f"WOULD create directory: {self}")
+            return self
+        
+        shutil.move = dry_move
+        Path.mkdir = dry_mkdir
+        
+        try:
+            yield
+        finally:
+            shutil.move = original_move
+            Path.mkdir = original_mkdir
+    else:
+        yield
+
+
 # =============================================================================
 # DISK SPACE MANAGEMENT - Critical for backup operations
 # =============================================================================
@@ -623,675 +1318,6 @@ class DiskSpaceManager:
             return True, None  # Assume OK if we can't check
 
 # =============================================================================
-# CONFIGURATIONS & DOMAIN MODELS
-# =============================================================================
-
-MAX_FILES: int = 10000
-BACKUP_DIR: Path = Path.home() / ".file_organizer" / "backups"
-LOG_DIR: Path = Path.home() / ".file_organizer" / "logs"
-
-
-class ConflictStrategy(Enum):
-    """Strategies for handling file name conflicts."""
-    SKIP = "skip"        # Skip conflicted files
-    RENAME = "rename"    # Rename conflicted files
-    OVERWRITE = "overwrite"  # Overwrite target files
-    DELETE = "delete"    # Delete source conflicted files
-
-
-@dataclass
-class FileInfo:
-    """Metadata container for a single file."""
-    path: Path           # Full path to file
-    name: str            # File name with extension
-    stem: str            # File name without extension
-    suffix: str          # Extension with dot
-    category: str        # Directory derived from suffix
-    size: int = 0        # File size in bytes
-    permission: int | None = None  # File permissions
-    created: datetime | None = None  # Creation timestamp
-    modified: datetime | None = None  # Modification timestamp
-
-
-@dataclass
-class OrganizationResult:
-    """Results container for organization operations."""
-    organized: int = 0                     # Files successfully organized
-    skipped: int = 0                       # Files skipped (already in correct location)
-    conflicts: int = 0                     # Files with name conflicts
-    errors: int = 0                        # Files that failed with errors
-    created_categories_count: int = 0      # New categories created
-    operations: List[Tuple[Path, Path]] = field(default_factory=list)  # Move operations
-    discovered_categories: Set[str] = field(default_factory=set)  # All categories found
-
-# =============================================================================
-# CORE UTILITIES - Single responsibility functions
-# =============================================================================
-
-def setup_logging() -> None:
-    """Setup dual logging: console for users, file for debugging."""
-    file_level = "DEBUG"
-    user_level = "INFO"
-    
-    logger.remove()
-    
-    # Console logging (user-friendly)
-    logger.add(
-        sink=sys.stderr,
-        level=user_level,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
-        colorize=True,
-        backtrace=True,
-        catch=True
-    )
-    
-    # File logging (detailed, for debugging)
-    log_file = LOG_DIR / "organizer.log"
-    logger.add(
-        sink=str(log_file),
-        level=file_level,
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}.{function}:{line} | {message}",
-        rotation="10 MB",
-        retention="30 days",
-        compression="gz",
-        enqueue=True,
-        backtrace=True,
-        catch=True,
-    )
-
-
-def ensure_directories_exist() -> None:
-    """Create required directories if they don't exist."""
-    try:
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"Directories ensured: {BACKUP_DIR}, {LOG_DIR}")
-    except PermissionError as e:
-        logger.error(
-            f"Cannot create directories. "
-            f"Check write permissions for: {BACKUP_DIR.parent} and {LOG_DIR}"
-        )
-        raise PermissionError(f"Directory creation failed: {e}")
-
-
-def extract_file_category(
-    file_path: Path, 
-    *, 
-    custom_mapping: dict[str, str] | None = None
-) -> str:
-    """
-    Generate safe directory name from file extension with compound extension support.
-    
-    FEATURES:
-    - Handles compound extensions (.tar.gz, .tar.bz2)
-    - Custom mapping overrides built-in categories
-    - Sanitizes unsafe characters in category names
-    - Special handling for hidden files
-    """
-    
-    # Handle None case
-    if custom_mapping is None:
-        custom_mapping = {}
-    
-    # Hidden files
-    if file_path.name.startswith("."):
-        return "hidden"
-    
-    # Get all suffixes for compound extensions
-    suffixes = file_path.suffixes  # Returns ['.tar', '.gz'] for .tar.gz
-    if not suffixes:
-        return "no_extension"
-    
-    # Build full extension (e.g., '.tar.gz') and last extension (e.g., '.gz')
-    full_extension = ''.join(suffixes).lower()
-    last_extension = suffixes[-1].lower() if suffixes else ""
-    
-    # Priority 1: custom mapping (check full extension first, then last)
-    if full_extension in custom_mapping:
-        return custom_mapping[full_extension]
-    if last_extension in custom_mapping:
-        return custom_mapping[last_extension]
-    
-    # Built-in categories with compound extension support
-    CATEGORY_MAP = {
-        # Media
-        ".mp4": "movies", ".avi": "movies", ".mkv": "movies", 
-        ".mov": "movies", ".wmv": "movies", ".flv": "movies",
-        ".webm": "movies", ".m4v": "movies",
-        
-        ".mp3": "music", ".wav": "music", ".flac": "music",
-        ".m4a": "music", ".ogg": "music", ".aac": "music",
-        ".wma": "music", ".opus": "music",
-        
-        ".jpg": "images", ".jpeg": "images", ".png": "images",
-        ".gif": "images", ".webp": "images", ".bmp": "images",
-        ".tiff": "images", ".svg": "images", ".ico": "images",
-        ".heic": "images", ".raw": "images",
-        
-        # Documents
-        ".pdf": "documents",
-        ".doc": "documents", ".docx": "documents",
-        ".txt": "documents", ".rtf": "documents",
-        ".odt": "documents", ".md": "documents",
-        ".pages": "documents",
-        
-        # Spreadsheets
-        ".xls": "spreadsheets", ".xlsx": "spreadsheets",
-        ".ods": "spreadsheets", ".csv": "spreadsheets",
-        
-        # Presentations
-        ".ppt": "presentations", ".pptx": "presentations",
-        ".odp": "presentations", ".key": "presentations",
-        
-        # Archives - singles and compounds
-        ".zip": "archives", ".tar": "archives",
-        ".rar": "archives", ".7z": "archives", 
-        ".bz2": "archives", ".gz": "archives",
-        
-        # Compound archives
-        ".tar.gz": "archives", ".tar.bz2": "archives", 
-        ".tar.xz": "archives", ".tgz": "archives",
-        
-        # Code
-        ".py": "code", ".js": "code", ".java": "code",
-        ".cpp": "code", ".c": "code", ".html": "code",
-        ".css": "code", ".json": "code", ".xml": "code",
-        ".yaml": "code", ".yml": "code", ".toml": "code",
-        ".ini": "code", ".cfg": "code", ".conf": "code",
-        
-        # Executables
-        ".exe": "executables", ".msi": "executables",
-        ".app": "executables", ".sh": "executables",
-        ".bat": "executables", ".cmd": "executables",
-    }
-    
-    # Priority 2: Built-in mapping (check full compound extension first, then last)
-    if full_extension in CATEGORY_MAP:
-        return CATEGORY_MAP[full_extension]
-    if last_extension in CATEGORY_MAP:
-        return CATEGORY_MAP[last_extension]
-    
-    # Fallback: For unknown extensions
-    if len(suffixes) > 1:
-        # Compound extension: join without dots and sanitize
-        base_category = ''.join(s.lstrip('.') for s in suffixes)
-    else:
-        # Single extension
-        base_category = last_extension.lstrip(".")
-    
-    # Sanitize to make safe folder name
-    category = re.sub(r"[^\w\-]", "_", base_category)
-    
-    # Ensure non-empty category
-    if not category or category.isspace():
-        return "misc"
-    return category.strip()
-
-
-def gather_file_metadata(file_path: Path) -> FileInfo:
-    """Extract comprehensive metadata from a file."""
-    
-    # Assert operational invariants
-    if not file_path.is_file():
-        raise ValidationError(f"Not a file: {file_path}")
-    
-    try:
-        stat = file_path.stat()
-    except (PermissionError, OSError) as e:
-        raise ValidationError(f"Cannot read file metadata: {e}") from e
-    
-    return FileInfo(
-        path=file_path,
-        name=file_path.name,
-        stem=file_path.stem,
-        suffix=file_path.suffix,
-        category=extract_file_category(file_path),
-        size=stat.st_size,
-        permission=stat.st_mode,
-        created=datetime.fromtimestamp(stat.st_ctime),
-        modified=datetime.fromtimestamp(stat.st_mtime),
-    )
-
-
-def generate_unique_filename(target_path: Path, max_attempts: int = 1000) -> Path:
-    """
-    Create unique filename by appending counter.
-    
-    Example: "file.txt" → "file_1.txt" → "file_2.txt"
-    """
-    counter = 1
-    parent = target_path.parent
-    stem, suffix = target_path.stem, target_path.suffix
-    
-    while counter <= max_attempts:
-        new_name = parent / f"{stem}_{counter}{suffix}"
-        if not new_name.exists():
-            return new_name
-        counter += 1
-    
-    raise RuntimeError(f"Could not generate unique name after {max_attempts} attempts")
-
-# =============================================================================
-# FILE COPY UTILITIES - Secure with progress tracking
-# =============================================================================
-
-def _copy_single_file_secure(src_file: Path, src_root: Path, dst_root: Path) -> int:
-    """
-    Copy a single file with retry logic and comprehensive error handling.
-    
-    SECURITY FEATURES:
-    1. Verifies file is under source root (prevents symlink escapes)
-    2. Retry logic for transient errors
-    3. Size verification after copy
-    4. Cleanup of partial files on failure
-    
-    DESIGN:
-        - Retry up to 3 times with exponential backoff
-        - Verify copy succeeded by checking file size
-        - Preserve all file metadata (timestamps, permissions)
-    """
-    # Calculate destination path while preserving directory structure
-    try:
-        relative_path = src_file.relative_to(src_root)
-    except ValueError:
-        raise ValidationError(
-            f"Security violation: File {src_file} is not under source root {src_root}"
-        )
-    
-    # Construct full destination path
-    target_file = dst_root / relative_path
-    
-    # Ensure parent directory exists
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Get source file size for verification
-    try:
-        file_size = src_file.stat().st_size
-    except OSError as e:
-        raise PermissionError(f"Cannot read source file {src_file.name}: {e}")
-    
-    # Retry loop for transient errors
-    last_error = None
-    for attempt in range(3):
-        try:
-            # Copy with metadata preservation
-            shutil.copy2(src_file, target_file)
-            
-            # Verification: Ensure copy succeeded completely
-            if not target_file.exists():
-                raise OSError(f"Target file not created after copy operation")
-            
-            # Verify copied file size matches source
-            copied_size = target_file.stat().st_size
-            if copied_size != file_size:
-                # Partial copy detected - delete and retry
-                target_file.unlink(missing_ok=True)
-                raise OSError(
-                    f"Copy incomplete: {copied_size:,} of {file_size:,} bytes transferred"
-                )
-            
-            # SUCCESS: File copied completely and verified
-            return file_size
-            
-        except (OSError, IOError, PermissionError) as e:
-            last_error = e
-            
-            # Cleanup: Remove any partial file
-            target_file.unlink(missing_ok=True)
-            
-            if attempt < 2:  # Not the last attempt
-                # Exponential backoff
-                sleep_time = 0.1 * ((attempt + 1) ** 2)
-                logger.debug(
-                    f"Retry {attempt + 1}/3 for {src_file.name}: "
-                    f"{e}, waiting {sleep_time:.1f}s"
-                )
-                time.sleep(sleep_time)
-            else:
-                logger.debug(f"Final copy attempt failed for {src_file.name}: {e}")
-    
-    # All retry attempts failed
-    raise last_error or OSError(f"Unknown error copying {src_file.name}")
-
-
-def copy_directory_with_progress_secure(src_dir: Path, dst_dir: Path) -> int:
-    """
-    Securely copy directory contents with progress feedback.
-    
-    DESIGN PHILOSOPHY: Simple, Safe, Secure
-    - Simple: Uses lists for predictable behavior and accurate progress
-    - Safe: Includes safety limits and comprehensive error handling
-    - Secure: Validates all inputs and protects against common attacks
-    
-    SECURITY FEATURES:
-    1. Path traversal protection
-    2. Source read-only validation
-    3. Destination write-only validation
-    4. Symlink protection
-    5. Input sanitization
-    
-    PERFORMANCE:
-    1. Two-pass approach: Count then copy (accurate progress)
-    2. List-based processing: Simple and debuggable
-    3. Safety limits: Prevents denial-of-service
-    4. Adaptive progress: Works in both terminals and batch mode
-    """
-    
-    # =========================================================================
-    # PHASE 1: SECURITY VALIDATION (Fail Fast Principle)
-    # =========================================================================
-    
-    # Validate source directory (needs READ permission)
-    source_validation = parse_backup_source(src_dir)
-    if source_validation.is_invalid:
-        error_messages = "\n".join(str(e) for e in source_validation.errors)
-        raise ValidationError(f"Invalid source directory:\n{error_messages}")
-    
-    # Validate destination directory (needs WRITE permission)
-    dest_validation = parse_backup_destination(dst_dir)
-    if dest_validation.is_invalid:
-        error_messages = "\n".join(str(e) for e in dest_validation.errors)
-        raise ValidationError(f"Invalid destination directory:\n{error_messages}")
-    
-    # =========================================================================
-    # PHASE 2: DISCOVERY AND COUNTING (For Accurate Progress)
-    # =========================================================================
-    
-    logger.debug(f"Starting directory scan: {src_dir}")
-    scan_start_time = datetime.now()
-    
-    # Track statistics during discovery
-    total_items = 0
-    total_files = 0
-    file_paths = []
-    
-    try:
-        for item in src_dir.rglob("*"):
-            total_items += 1
-            
-            # SAFETY: Absolute limit to prevent denial-of-service
-            if total_items > 1_000_000:
-                scan_time = (datetime.now() - scan_start_time).total_seconds()
-                raise ValidationError(
-                    f"Directory exceeds safety limit ({total_items:,} > 1,000,000 items).\n"
-                    f"Scanned for {scan_time:.1f}s before hitting limit."
-                )
-            
-            # Only collect regular files
-            if item.is_file():
-                total_files += 1
-                file_paths.append(item)
-                
-    except OSError as e:
-        scan_time = (datetime.now() - scan_start_time).total_seconds()
-        raise ValidationError(f"Cannot scan source directory after {scan_time:.1f}s: {e}")
-    
-    # Calculate scanning performance
-    scan_time = (datetime.now() - scan_start_time).total_seconds()
-    scan_rate = total_items / scan_time if scan_time > 0 else 0
-    
-    # Early exit if no files found
-    if total_files == 0:
-        logger.info(f"No files found in {src_dir}")
-        return 0
-    
-    # Log discovery results
-    logger.info(
-        f"Found {total_files:,} files in {total_items:,} total items "
-        f"(scanned in {scan_time:.2f}s, {scan_rate:,.0f} items/sec)"
-    )
-    
-    # =========================================================================
-    # PHASE 3: COPY EXECUTION WITH PROGRESS FEEDBACK
-    # =========================================================================
-    
-    # Initialize copy statistics
-    copied_files = 0
-    skipped_files = 0
-    total_bytes = 0
-    copy_start_time = datetime.now()
-    
-    # Determine terminal capabilities
-    is_interactive_terminal = sys.stderr.isatty()
-    
-    try:
-        if is_interactive_terminal:
-            # Interactive terminal with tqdm progress bar
-            try:
-                with tqdm(
-                    total=total_files,
-                    desc="📁 Copying files",
-                    unit="files",
-                    bar_format="{l_bar}{bar:40}{r_bar}",
-                    colour="green",
-                    ncols=80,
-                    mininterval=0.1,
-                    maxinterval=1.0,
-                ) as progress_bar:
-                    
-                    for file_path in file_paths:
-                        try:
-                            bytes_copied = _copy_single_file_secure(
-                                src_file=file_path,
-                                src_root=src_dir,
-                                dst_root=dst_dir
-                            )
-                            copied_files += 1
-                            total_bytes += bytes_copied
-                            
-                        except Exception as e:
-                            logger.warning(f"Failed to copy {file_path.name}: {e}")
-                            skipped_files += 1
-                        
-                        progress_bar.update(1)
-                        
-                        # Update progress bar description periodically
-                        if copied_files % 100 == 0:
-                            elapsed = (datetime.now() - copy_start_time).total_seconds()
-                            file_rate = copied_files / elapsed if elapsed > 0 else 0
-                            mb_copied = total_bytes / (1024 * 1024)
-                            progress_bar.set_description(
-                                f"📁 Copying ({file_rate:.0f} files/sec, {mb_copied:.0f} MB)"
-                            )
-                
-            except ImportError:
-                # tqdm not installed - fall back to simple logging
-                logger.debug("tqdm not available, falling back to simple progress logging")
-                raise EnvironmentError("tqdm package not installed")
-        
-        else:
-            # Non-interactive/batch mode (log-based progress)
-            logger.info(f"Starting copy of {total_files:,} files (batch mode)")
-            
-            # Calculate log interval
-            log_interval = max(100, total_files // 20)
-            files_since_last_log = 0
-            
-            for file_path in file_paths:
-                try:
-                    bytes_copied = _copy_single_file_secure(
-                        src_file=file_path,
-                        src_root=src_dir,
-                        dst_root=dst_dir
-                    )
-                    copied_files += 1
-                    total_bytes += bytes_copied
-                    files_since_last_log += 1
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to copy {file_path.name}: {e}")
-                    skipped_files += 1
-                    files_since_last_log += 1
-                
-                # Log progress at calculated intervals
-                if files_since_last_log >= log_interval:
-                    elapsed = (datetime.now() - copy_start_time).total_seconds()
-                    file_rate = copied_files / elapsed if elapsed > 0 else 0
-                    gb_copied = total_bytes / (1024 * 1024 * 1024)
-                    
-                    logger.info(
-                        f"Progress: {copied_files:,}/{total_files:,} files, "
-                        f"{gb_copied:.2f} GB, "
-                        f"{file_rate:.1f} files/sec"
-                    )
-                    files_since_last_log = 0
-    
-    except KeyboardInterrupt:
-        # User pressed Ctrl+C - handle gracefully
-        elapsed = (datetime.now() - copy_start_time).total_seconds()
-        logger.warning(
-            f"Copy interrupted by user after {elapsed:.1f}s.\n"
-            f"  Copied: {copied_files:,} files\n"
-            f"  Skipped: {skipped_files:,} files"
-        )
-        raise
-    
-    except Exception as e:
-        elapsed = (datetime.now() - copy_start_time).total_seconds()
-        logger.error(f"Copy failed after {elapsed:.1f}s: {e}")
-        raise
-    
-    # =========================================================================
-    # PHASE 4: COMPLETION REPORTING AND METRICS
-    # =========================================================================
-    
-    # Calculate timing metrics
-    copy_time = (datetime.now() - copy_start_time).total_seconds()
-    total_time = (datetime.now() - scan_start_time).total_seconds()
-    
-    # Calculate performance metrics
-    file_rate = copied_files / copy_time if copy_time > 0 else 0
-    byte_rate = total_bytes / copy_time if copy_time > 0 else 0
-    gb_copied = total_bytes / (1024 * 1024 * 1024)
-    
-    # Success message
-    logger.success(
-        f"✅ COPY COMPLETE!\n"
-        f"   Files: {copied_files:,} successfully copied\n"
-        f"   Failed: {skipped_files:,} files skipped\n"
-        f"   Data: {gb_copied:.2f} GB transferred\n"
-        f"   Time: {copy_time:.1f}s copying, {total_time:.1f}s total\n"
-        f"   Speed: {file_rate:.1f} files/sec, {byte_rate/1024/1024:.1f} MB/sec"
-    )
-    
-    # Security audit log
-    logger.debug(
-        f"SECURITY AUDIT LOG\n"
-        f"  Operation: Directory copy\n"
-        f"  Source: {src_dir} (validated: READ permission)\n"
-        f"  Destination: {dst_dir} (validated: WRITE permission)\n"
-        f"  Files processed: {copied_files} copied, {skipped_files} failed"
-    )
-    
-    # Warning for high failure rate
-    if skipped_files > 0:
-        failure_rate = (skipped_files / total_files) * 100
-        if failure_rate > 20:
-            logger.error(f"⚠️  HIGH FAILURE RATE: {skipped_files:,} files ({failure_rate:.1f}%) failed!")
-        elif failure_rate > 5:
-            logger.warning(f"⚠️  Some files failed: {skipped_files:,} files ({failure_rate:.1f}%)")
-        else:
-            logger.info(f"Note: {skipped_files:,} files skipped due to errors")
-    
-    return copied_files
-
-# =============================================================================
-# COMPRESSION UTILITIES
-# =============================================================================
-
-def compress_to_zip(source_dir: Path, archive_path: Path) -> bool:
-    """Compress directory to ZIP format."""
-    try:
-        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for file_path in source_dir.rglob("*"):
-                if file_path.is_file():
-                    arcname = file_path.relative_to(source_dir)
-                    zipf.write(file_path, arcname)
-        return True
-    except Exception as e:
-        logger.error(f"ZIP compression failed: {e}")
-        if archive_path.exists():
-            archive_path.unlink(missing_ok=True)
-        return False
-
-
-def compress_to_tar_gz(source_dir: Path, archive_path: Path) -> bool:
-    """Compress directory to TAR.GZ format."""
-    try:
-        with tarfile.open(archive_path, "w:gz") as tar:
-            tar.add(source_dir, arcname=source_dir.name)
-        return True
-    except Exception as e:
-        logger.error(f"TAR.GZ compression failed: {e}")
-        if archive_path.exists():
-            archive_path.unlink(missing_ok=True)
-        return False
-
-# =============================================================================
-# DECORATORS - Cross-cutting concerns
-# =============================================================================
-
-def with_logging(func: Callable) -> Callable:
-    """Decorator for automatic logging of function entry and exit."""
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        logger.debug(f"Starting {func.__name__}")
-        try:
-            result = func(*args, **kwargs)
-            logger.debug(f"Completed {func.__name__}")
-            return result
-        except Exception as e:
-            logger.error(f"{func.__name__} failed: {e}")
-            raise
-    return wrapper
-
-
-def with_retry(max_attempts: int = 3):
-    """Decorator for automatic retry logic with exponential backoff."""
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for attempt in range(max_attempts):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    if attempt < max_attempts - 1:
-                        logger.warning(f"Attempt {attempt + 1} failed, retrying...")
-            raise last_exception or RuntimeError("All retry attempts failed")
-        return wrapper
-    return decorator
-
-
-@contextmanager
-def with_dry_run(enabled: bool = True):
-    """Context manager for dry-run mode (no actual changes)."""
-    if enabled:
-        logger.info("🧪 DRY RUN MODE - No changes will be made")
-        original_move = shutil.move
-        original_mkdir = Path.mkdir
-        
-        def dry_move(src, dst_dir):
-            logger.info(f"WOULD move: {src} → {dst_dir}")
-            return dst_dir
-        
-        def dry_mkdir(self, *args, **kwargs):
-            logger.info(f"WOULD create directory: {self}")
-            return self
-        
-        shutil.move = dry_move
-        Path.mkdir = dry_mkdir
-        
-        try:
-            yield
-        finally:
-            shutil.move = original_move
-            Path.mkdir = original_mkdir
-    else:
-        yield
-
-# =============================================================================
 # BACKUP ORCHESTRATOR - Complete backup system with disk space management
 # =============================================================================
 
@@ -1422,11 +1448,6 @@ class BackupOrchestrator:
     def _copy_directory_with_space_monitoring(self, src_dir: Path, dst_dir: Path) -> int:
         """
         Copy directory with continuous disk space monitoring.
-        
-        PREVENTS:
-            - Starting copy without enough space
-            - Running out of space mid-copy
-            - Partial/corrupted backups
         """
         # Validate destination
         dest_validation = parse_backup_destination(dst_dir)
@@ -1454,47 +1475,63 @@ class BackupOrchestrator:
         
         logger.info(f"Copying {total_files:,} files from {src_dir} to {dst_dir}")
         
-        # Copy with space monitoring
+        # Initialize ALL variables at the top - this is the key fix
         copied_files = 0
         skipped_files = 0
         total_bytes = 0
+        copied_bytes = 0  # Initialize unconditionally right here
+        can_monitor_space = False
         
-        # Get initial disk space
+        # Try to enable space monitoring
         try:
             dst_usage = shutil.disk_usage(dst_dir)
             dst_free = dst_usage.free
-            safety_buffer = dst_free * 0.1  # Keep 10% free for system
-            copied_bytes = 0
+            can_monitor_space = True
+            # Note: copied_bytes is already 0 from initialization above
         except:
-            dst_free = None  # Can't monitor, proceed with caution
+            logger.debug("Cannot monitor disk space during copy - proceeding without space checks")
         
         # Copy each file with space check
         for file_path in file_paths:
-            file_size = file_path.stat().st_size
+            # Get file size
+            try:
+                file_size = file_path.stat().st_size
+            except OSError as e:
+                logger.warning(f"Cannot get size for {file_path.name}: {e}")
+                skipped_files += 1
+                continue
             
-            # Check disk space before each file
-            if dst_free is not None:
-                can_copy, space_msg = self.disk_manager.monitor_copy_progress(
-                    dst_dir, copied_bytes, file_size
-                )
-                
-                if not can_copy:
-                    raise ValidationError(
-                        f"Disk space exhausted after copying {copied_bytes/1024**3:.1f} GB.\n"
-                        f"Need {file_size/1024**3:.2f} GB more for {file_path.name}.\n"
-                        f"Backup incomplete - {len(file_paths) - copied_files} files remaining."
+            # Check disk space before each file (if monitoring is enabled)
+            if can_monitor_space:
+                try:
+                    can_copy, space_msg = self.disk_manager.monitor_copy_progress(
+                        dst_dir, copied_bytes, file_size
                     )
-                
-                if space_msg:  # Warning message
-                    logger.warning(space_msg)
+                    
+                    if not can_copy:
+                        raise ValidationError(
+                            f"Disk space exhausted after copying {copied_bytes/1024**3:.1f} GB.\n"
+                            f"Need {file_size/1024**3:.2f} GB more for {file_path.name}.\n"
+                            f"Backup incomplete - {len(file_paths) - copied_files} files remaining."
+                        )
+                    
+                    if space_msg:
+                        logger.warning(space_msg)
+                except Exception as e:
+                    logger.error(f"Disk space check failed: {e}")
+                    # Continue without further space checks for this file
+                    pass
             
             # Copy the file
             try:
                 bytes_copied = _copy_single_file_secure(file_path, src_dir, dst_dir)
                 copied_files += 1
                 total_bytes += bytes_copied
-                if dst_free is not None:
+                
+                # Update copied bytes for next space check (if monitoring is enabled)
+                if can_monitor_space:
                     copied_bytes += bytes_copied
+                    
             except Exception as e:
                 logger.warning(f"Failed to copy {file_path.name}: {e}")
                 skipped_files += 1
@@ -1685,13 +1722,13 @@ class FileOrganizationOrchestrator:
         # Process each file
         with with_dry_run(dry_run):
             with tqdm(
-                total=len(all_files),
-                desc="🏢 Organizing",
-                unit="files",
-                colour="blue",
-                bar_format="{l_bar}{bar:40}{r_bar}",
-                ncols=80,
-                mininterval=0.1,
+                total=len(all_files), # total items. 100%
+                desc="🏢 Organizing", # Text before bar
+                unit="files",         # Unit names
+                colour="blue",        # Bar colour
+                bar_format="{l_bar}{bar:40}{r_bar}", # How bar looks
+                ncols=80,   # Width in characters
+                mininterval=0.1,  # Minimum update interval(seconds)
             ) as pbar:
                 for file_path in all_files:
                     self._process_single_file(

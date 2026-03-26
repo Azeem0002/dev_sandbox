@@ -8,6 +8,7 @@
 echo "# repo" >> README.md
 - init
 - branch -M main (“Work on a different version without touching the main one”)
+* check current branch: git branch --show-current or git branch
 # Analogy:
 # git add = selecting pages
 # git commit = submitting them and stamping date + message
@@ -94,3 +95,44 @@ git config --global alias.pushboth "push both main"
 
 <!-- Now you can just do: -->
 git pushboth
+
+
+# Dualboot crash fix:
+
+<!-- -Check current entries:  -->
+- sudo efibootmgr -v
+<!-- - Find your GRUB location:  -->
+- sudo ls /boot/efi/EFI/
+Look for debian/ or ubuntu/ or grub/ directory.
+<!-- -Confirm the GRUB file exists: -->
+sudo ls /boot/efi/EFI/debian/grubx64.efi
+<!-- find your disk and partition: -->
+- lsblk -f | grep -i efi
+<!-- Add Debian to efibootmgr -->
+- sudo efibootmgr -c -d /dev/sda -p 1 -L "debian" -l \\EFI\\debian\\grubx64.efi
+<!-- Verify it was added -->
+- sudo efibootmgr -v
+<!-- Set as primary -->
+- sudo efibootmgr -o X,other,entries
+Replace X with Debian's boot number. e.g 0000,0001
+<!-- Set fallback path (permanent protection) -->
+- sudo mkdir -p /boot/efi/EFI/BOOT
+sudo cp /boot/efi/EFI/debian/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.efi
+<!-- update GRUB -->
+- sudo update-grub
+
+# bootable device not found
+# 1. Mount your EFI partition
+mount /dev/sda1 /boot/efi
+
+# 2. Create fallback boot directory
+mkdir -p /boot/efi/EFI/BOOT
+
+# 3. Copy GRUB to fallback location
+cp /boot/efi/EFI/debian/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI
+
+# 4. Copy GRUB config (important step)
+cp -r /boot/grub /boot/efi/EFI/BOOT/
+
+# 5. Reboot
+reboot
