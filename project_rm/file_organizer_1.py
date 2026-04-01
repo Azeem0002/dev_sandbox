@@ -519,6 +519,7 @@ def setup_logging() -> None:
         rotation="10 MB",
         retention="30 days",
         compression="gz",
+        serialize=True,
         enqueue=True,
         backtrace=True,
         catch=True,

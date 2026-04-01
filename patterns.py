@@ -399,3 +399,22 @@ def with_dry_run(enabled: bool = True):
             Path.mkdir = original_mkdir
     else:
         yield
+
+
+"""
+ Automated Patterns Beyond Tenacity
+Yes, many things can be automated. Here's what you should NOT manually code:
+
+ Pattern	        Library  	             What it automates
+====================================================================================
+- Retries	        tenacity	             Transient failures, backoff, jitter
+- Logging	        loguru	                 File rotation, formatting, levels, context
+- CLI parsing	    typer/click  	         Args, help text, validation, subcommands
+- Background tasks	celery/apscheduler	     Async execution, job queues
+- Rate limiting	    ratelimit	             API throttling, request limiting
+- Caching	        cachetools/functools.lru_cache	     Expiring results, memoization
+- Circuit breaker	pybreaker	                 Prevent cascading failures
+- Timeouts	        timeout-decorator	             Prevent hanging operations
+- Health checks	    health-check	             Service liveness monitoring
+- Metrics	            prometheus_client	                 Counters, gaugues, histograms
+"""

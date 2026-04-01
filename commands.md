@@ -89,6 +89,10 @@ git remote remove REMOTE_NAME(e.g both, origin)
 # delete single url
 git remote set-url --delete REMOTE_NAME git@gitlab.comAzeem0002/dev_sandbox.git
 
+# Clean commits:
+git reset --soft HEAD~5
+git commit -m "clean commit"
+
 # Optional alias (push to both with one command)
 <!-- Edit your global git config: -->
 git config --global alias.pushboth "push both main"
