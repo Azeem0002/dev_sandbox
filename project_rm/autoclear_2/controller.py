@@ -186,8 +186,8 @@ def status_autoclear()-> str: # orchestration
     # Step 1: Check if PID file exists
     pid_file = _get_pid_file_path()
     if not pid_file.is_file():
-        logger.warning("PID file not found")
-        return "STOPPED"
+        # logger.info("Autoclear not running")
+        return "STOPPED: Autoclear not running"
     
     # Step 2: Read PID from file
     pid = _read_pid_file(pid_file)
