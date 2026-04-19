@@ -1,20 +1,36 @@
+
+# Option A
+###version = "0.1.0"###
+
+# Option B: Git-based version (keep hatch.version, remove manual version)
 [project]
-name = "dev-sandbox"
-version = "0.1.0"
+name = "dev-sandbox" # Package name on PyPI
+dynamic = ["version"]  # Replace version = "0.1.0" with this
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13"    # Won't install on older Python
+
 dependencies = [
+    "apscheduler>=3.11.2",
     "loguru>=0.7.3",
+    "platformdirs>=4.9.4",
     "psutil>=7.2.2",
+    "pydantic>=2.13.0",
     "pytest>=9.0.2",
     "pytimeparse>=1.1.8",
     "tenacity>=9.1.4",
     "tqdm>=4.67.3",
     "typer>=0.24.1",
-]
+]    # Auto-installed when someone installs your package
 
 [tool.uv.workspace]
 members = [
     "auto_clear",
 ]
+
+[tool.hatch.version]
+source = "vcs"                 # ⚠️ THIS OVERRIDES version="0.1.0"
+                               # Uses git tags instead: v1.2.3 → version 1.2.3
+
+[project.scripts]
+autoclear = "src.api.cli:app"  # Creates `autoclear` command that runs app()

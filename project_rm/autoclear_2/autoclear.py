@@ -17,12 +17,14 @@ auto_run()
 
 import subprocess
 import time
-import os
+import os # python standard module for interacting with the operating system
 import sys
 from pathlib import Path
-from loguru import logger
 from dataclasses import dataclass
 from typing import Callable # Callable: Anything you can call like a function: something()
+
+from platformdirs import PlatformDirs
+from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 
@@ -30,35 +32,77 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 # DOMAIN
 # =============================================================================
 
-LOG_DIR  = Path.home()/ ".autoclear"/ "autoclear.log"
+def _setup_env()->Path:
+    """cross platform path for logs"""
 
-def setup_logging()-> None:
-    file_log = "DEBUG"
-    user_log = "INFO"
+    APP_NAME= "autoclear"
+    APP_AUTHOR= "Al-Azeem" # appauthor mainly matters on windows
 
-    logger.remove()
-    logger.add(
-        sink = sys.stderr,
-        level= user_log,
-        format= "{} |{}| {}",
-        
-    )
+    dirs = PlatformDirs(appname=APP_NAME, appauthor=APP_AUTHOR)
+    
+    LOG_DIR= Path(dirs.user_log_dir)
+    CONFIG_DIR= Path(dirs.user_config_dir)
 
-    logger.add(
-        sink= LOG_DIR,
-        level = file_log,
-        rotation= "10 MB",
-        retention= "7 days",
-        compression= "gz",
-        serialize= True,
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # DATA_DIR & CACHE_DIR also
+    except OSError as e:
+        logger.debug(f"Failed to create directory")
+        raise PermissionError(f"Failed to create directory") from e
+
+    log_file= LOG_DIR / "autoclear.log" 
+    # config_file= CONFIG_DIR / "config.json"
+    # you can find log file in: ~/.local/state/appname
+
+    return log_file
+
+
+def _setup_logger(log_file: Path)-> None:
+    
+    logger.remove() # remove default settings/ink
+
+    ENV = os.getenv("APP_ENV", "dev") # os.getenv(key, value)
+    # "APP_ENV": The key for ENV. can be an string
+    # "dev" fallback value. default environment is determined by the fallback
+
+    if ENV == "prod":
+        # Production environment: stdout only
+        logger.add(
+        sink = sys.stdout,
+        level= "INFO",
         enqueue= True,
-        # traceback=True,
-    )
+        )
+
+    # Development environment: stdout + file
+    else:
+
+        logger.add(
+        sink = sys.stdout,
+        level= "DEBUG",
+        enqueue= True,
+        backtrace=True,
+        )
+
+        logger.add(
+            sink= log_file,
+            level = "DEBUG",
+            rotation= "2 MB",
+            retention= "3 days", # or 3 files
+            compression= "gz",
+            serialize= True,
+            enqueue= True,
+            backtrace=True,
+            catch=True,
+            )
 
 
+# ==========================
+# CONFIGURATIONS
+# ==========================
 @dataclass(frozen=True)
 class AutoclearConfig:
-    interval: int = 3600
+    interval: int = 3600 # 1h
     max_retries: int = 3
     retry_delay: float = 1.0
 
@@ -76,9 +120,11 @@ def _execute_command(command: list[str]) -> None:
     # List prevents command injection vulnerabilities
     try:
         subprocess.run(command, timeout=5, check=True)
-    # check=True: if command fails → raise CalledProcessError, if not → silently ignore failure ❌
+        # logger.info("Terminal cleared")
+    # check=True: if command fails → silently ignore CalledProcessError
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Clear failed: {command}") from e
+        # RuntimeError: for hiding low level details for orchestrations
         # Reraise better error message- Optional
 
 def _sleep(seconds: int) -> None:
@@ -88,12 +134,12 @@ def _sleep(seconds: int) -> None:
 # =============================================================================
 # FEATURES (COMPOSABLE)
 # =============================================================================
-def log_before(retry_state):
+def _log_before(retry_state): # Counting
     attempt = retry_state.attempt_number
     logger.info(f"Attempt {attempt}/{retry_state.retry_object.stop.max_attempt_number}")
     
 
-def log_after(retry_state):
+def _log_after(retry_state):
     if retry_state.outcome.failed:
         logger.warning(f"Attempt failed: {retry_state.outcome.exception()}")
     else:
@@ -111,8 +157,8 @@ def with_retry(max_attempts: int, delay: float) -> Callable: # Calls decorator
         """
         @retry(stop=stop_after_attempt(max_attempts), 
                wait=wait_fixed(delay),
-               before= log_before,  # logs for every failed retry
-               after= log_after, # logs & throw real error after max failed or succeeded retry attempts
+               before= _log_before,  # logs for every failed retry
+               after= _log_after, # logs & throw real error after max failed or succeeded retry attempts
                reraise=True) # raises last error after max attempts
         def wrapped(*args, **kwargs): # generic wrapper. accepts ANY function signature. executes original function
             """Wrapped function that will be replaced with original function: _execute_command """
@@ -148,12 +194,16 @@ def run_autoclear(config: AutoclearConfig) -> None:
     while True:
         try:
             clear_terminal(config)
-        except RuntimeError: # Loop resilience → Handles permanent failures without crashing
             logger.success("Terminal cleared")
+
+        except RuntimeError: # Loop resilience → Handles permanent failures without crashing
             time.sleep(1) # throttle failures
         _sleep(config.interval)
-        
-        
+
+   
+def init():
+    LOG_FILE = _setup_env()
+    _setup_logger(LOG_FILE)
 
 if __name__ == "__main__":
 
@@ -165,6 +215,7 @@ if __name__ == "__main__":
     except ValueError:
         logger.info("Invalid time interval. (e.g. 10s, 5, 2h)")
         sys.exit(1)
+
 
     """
     sys.argv	        List of command-line arguments

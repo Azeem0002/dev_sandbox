@@ -1,0 +1,18 @@
+# /etc/systemd/system/scheduler.service
+
+[Unit]
+Description=Job Scheduler
+After=network.target
+
+[Service]
+Type=simple
+User=az
+WorkingDirectory=/home/az/dev_sandbox/project_rm
+ExecStart=/usr/bin/python3 /home/az/dev_sandbox/project_rm/scheduler.py start
+Restart=on-failure      # ← Auto-restart on crash
+RestartSec=5           # ← Wait 5s before restart
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

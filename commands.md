@@ -66,6 +66,11 @@ git branch --set-upstream-to=origin/main main
 - Now git pull automatically pulls from GitHub (origin)
 - You avoid accidentally pulling from GitLab
 
+<!-- Add branch -->
+git branch new_branch_name
+<!-- Delete branch -->
+git branch -d branch_name
+
 
 | Action         | Command                                 |
 | -------------- | --------------------------------------- |
@@ -101,7 +106,7 @@ git config --global alias.pushboth "push both main"
 git pushboth
 
 
-# Dualboot crash fix:
+### Dualboot crash fix:
 
 <!-- -Check current entries:  -->
 - sudo efibootmgr -v
