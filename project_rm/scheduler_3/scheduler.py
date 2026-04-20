@@ -13,16 +13,18 @@ from loguru import logger
 from dataclasses import dataclass
 from datetime import datetime
 from platformdirs import PlatformDirs
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 import os
 import typer
 import time
 import sys
 import uuid
 import shlex
+import getpass
 import json
 import subprocess
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Callable, Literal, TypeVar
+from typing import Any, Callable, Literal
 
 
 # APSCHEDULER
@@ -35,14 +37,22 @@ from apscheduler.jobstores.base import JobLookupError
 # CONFIG
 # ============================================
 
-APP_NAME = "scheduler"
-APP_AUTHOR = "Al-Azeem"
+class AppConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
 
-STORAGE_TZ = ZoneInfo("UTC")  # DB storage # UTC: Coordinated universal time
-LOCAL_TZ = ZoneInfo("Africa/Lagos")  # User display
+    app_name: str = "scheduler"
+    app_author: str = "Al-Azeem"
+    storage_timezone: str = "UTC"
+    local_timezone: str = "Africa/Lagos"
+    max_jobs: int = 100
+
+
+APP_CONFIG = AppConfig()
+STORAGE_TZ = ZoneInfo(APP_CONFIG.storage_timezone)
+LOCAL_TZ = ZoneInfo(APP_CONFIG.local_timezone)
 
 # Platform-appropriate data directory
-dirs = PlatformDirs(APP_NAME, APP_AUTHOR)
+dirs = PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
 DB_PATH = Path(dirs.user_data_dir) / "jobs.db"
 
 scheduler = BackgroundScheduler(timezone=LOCAL_TZ)
@@ -104,14 +114,85 @@ def _setup_logger(file_log: Path)-> None:
 # ============================================
 
 # Object: An instance of a class, Noun: Name of thing
-@dataclass 
-class AddJobInput: #Job application form
+class AddJobInput(BaseModel): #Job application form
     """User's request (raw input)"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     name: str
     commands: list[str] # secure
-    schedule_type: str  # "once" | "weekly"
+    schedule_type: Literal["once", "weekly"]
     days_of_week: list[int] | None = None  # 1–7
     scheduled_time: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _normalize_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        return cleaned or "My Job"
+
+    @field_validator("commands")
+    @classmethod
+    def _validate_commands_list(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("Command cannot be empty")
+
+        cleaned = [part.strip() for part in value if part.strip()]
+        if not cleaned:
+            raise ValueError("Command cannot be empty")
+
+        forbidden = [";", "&", "|", "\n", "\r", "`", "$(", ">", "<"]
+        for part in cleaned:
+            for token in forbidden:
+                if token in part:
+                    raise ValueError(f"Unsafe pattern: {token}")
+
+        return cleaned
+
+    @field_validator("schedule_type", mode="before")
+    @classmethod
+    def _normalize_schedule_type(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Schedule type must be text")
+        normalized = value.lower().strip()
+        if normalized not in ("once", "weekly"):
+            raise ValueError("Must be 'once' or 'weekly'")
+        return normalized
+
+    @field_validator("days_of_week")
+    @classmethod
+    def _normalize_days(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+
+        normalized = sorted(set(value))
+        for day in normalized:
+            if not (1 <= day <= 7):
+                raise ValueError(f"Day {day} must be 1-7")
+        return normalized
+
+    @field_validator("scheduled_time")
+    @classmethod
+    def _normalize_scheduled_time(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def _validate_schedule_shape(self) -> "AddJobInput":
+        if self.schedule_type == "once":
+            if not self.scheduled_time:
+                raise ValueError("One-time jobs require a scheduled time")
+            if self.days_of_week is not None:
+                raise ValueError("One-time jobs do not accept days_of_week")
+            return self
+
+        if not self.days_of_week:
+            raise ValueError("Weekly jobs require at least one day")
+        if not self.scheduled_time:
+            raise ValueError("Weekly jobs require a scheduled time")
+        return self
 
 @dataclass
 class Job: # Employee record after hiring
@@ -145,26 +226,40 @@ def _detect_platform() -> str:
 
     return "unknown"
 
-def _build_systemd_service() -> str:
+def _format_exec_args(args: list[str]) -> str:
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
+def _build_systemd_service(*, system: bool) -> str:
     """Generate systemd service file content"""
-    return f"""[Unit]
-Description=Job Scheduler
-After=network.target
+    service_lines = [
+        "[Unit]",
+        "Description=Job Scheduler",
+        "After=network.target",
+        "",
+        "[Service]",
+        "Type=simple",
+    ]
 
-[Service]
-Type=simple
-WorkingDirectory={Path(__file__).parent.resolve()}
-ExecStart={sys.executable} {Path(__file__).resolve()} start
-Restart=on-failure
-RestartSec=10
-MemoryMax=200M
-CPUQuota=50%
-StandardOutput=journal
-StandardError=journal
+    if system:
+        service_lines.append(f"User={getpass.getuser()}")
 
-[Install]
-WantedBy=multi-user.target
-"""
+    service_lines.extend([
+        f"WorkingDirectory={Path(__file__).parent.resolve()}",
+        f"ExecStart={_format_exec_args([sys.executable, str(Path(__file__).resolve()), 'start'])}",
+        "Restart=on-failure",
+        "RestartSec=10",
+        "MemoryMax=200M",
+        "CPUQuota=50%",
+        "StandardOutput=journal",
+        "StandardError=journal",
+        "",
+        "[Install]",
+        f"WantedBy={'multi-user.target' if system else 'default.target'}",
+        "",
+    ])
+
+    return "\n".join(service_lines)
 
 
 # ============================================
@@ -172,16 +267,15 @@ WantedBy=multi-user.target
 # ============================================
 
 def _build_windows_task_command() -> list[str]:
-    python_exe = sys.executable
-    script_path = Path(__file__).resolve()
+    task_target = subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve()), "start"])
 
     return [
         "schtasks",
         "/create",
         "/tn", "Scheduler",
-        "/tr", f'{python_exe} "{script_path}" start',
-        "/sc", "onstart",
-        "/rl", "highest",
+        "/tr", task_target,
+        "/sc", "onlogon",
+        "/rl", "limited",
         "/f"
     ]
     
@@ -274,11 +368,7 @@ def _execute_job_commands(commands: list[str]) -> None:
 
 def _build_job(data: AddJobInput) -> Job:
     """Transform input into complete Job object"""
-
-    schedule_type = data.schedule_type.lower().strip()
-
-    if schedule_type not in ("once","weekly"):
-        raise ValueError("Invalid schedule type")
+    schedule_type = data.schedule_type
 
     trigger = _create_trigger(
         schedule_type,
@@ -642,11 +732,11 @@ def install_service(system: bool = False) -> tuple[str, list[str]]:
         _install_windows_task()
         return (
             "✓ Windows Task 'Scheduler' created",
-            ["Task will run on system startup"]
+            ["Task will run when the current user logs on"]
         )
     
     elif platform == "linux":
-        content = _build_systemd_service()
+        content = _build_systemd_service(system=system)
         
         if system:
             path = _install_systemd_system(content)
@@ -665,7 +755,8 @@ def install_service(system: bool = False) -> tuple[str, list[str]]:
                 [
                     "systemctl --user daemon-reload",
                     "systemctl --user enable scheduler",
-                    "systemctl --user start scheduler"
+                    "systemctl --user start scheduler",
+                    f"loginctl enable-linger {getpass.getuser()}"
                 ]
             )
     
@@ -682,7 +773,7 @@ def install_service(system: bool = False) -> tuple[str, list[str]]:
 # input/output: dataclass
 def add_jobs(data: AddJobInput) -> Job:
     """Add a new scheduled job"""
-    if _count_jobs() >= 100:
+    if _count_jobs() >= APP_CONFIG.max_jobs:
         raise ValueError("Maximum of 100 jobs reached")
     
     # Ensure job has ID before scheduling
@@ -749,9 +840,15 @@ def resume_jobs(identifier: str) -> Job :
     if job_id is None:
         raise ValueError(f"Job '{job.name}' has no ID")
 
-    # Resume in scheduler
+    # Resume in scheduler when this process owns in-memory jobs.
     try:
-        scheduler.resume_job(job_id)
+        if scheduler.get_job(job_id) is None:
+            if scheduler.running:
+                _schedule_single_job(job)
+        else:
+            scheduler.resume_job(job_id)
+    except JobLookupError:
+        pass
     except Exception as e:
         raise RuntimeError(f"Failed to resume: {e}")
     
@@ -765,14 +862,13 @@ def resume_jobs(identifier: str) -> Job :
 
 
 def start_scheduler_daemon():
-
-    _load_jobs_from_database()
-
     if not scheduler.running:
         scheduler.start()
         logger.info("Scheduler daemon started")
     else:
         logger.info("Scheduler already running")
+
+    _load_jobs_from_database()
     
     try:
         while True:
@@ -812,10 +908,14 @@ def init():
     _init_db()
 
 # CORE retry engine
+"""
+Not core:
 
-T = TypeVar("T")
+anything touching external libraries, frameworks database drivers, schedulers, CLI toolkits, or network clients, it is usually not core.
+core should survive framework replacement
+"""
 
-def _prompt_until_valid(
+def _prompt_until_valid[T](
     prompt_text: str, 
     op: Callable[[str], T],
     max_attempts: int = 3,
@@ -849,7 +949,7 @@ def _prompt_until_valid(
             if remaining > 0:
                 typer.echo(f"{error_prefix} {e} ({remaining} attempt(s) left)", err=True)
             else:
-                logger.error(f"{error_prefix} Too many invalid attempts. Exiting.", err=True)
+                typer.echo(f"{error_prefix} Too many invalid attempts. Exiting.", err=True)
                 raise typer.Exit(1)
         
         except KeyboardInterrupt:
@@ -1057,7 +1157,8 @@ def stop():
         else:
             typer.echo("Scheduler already stopped")
     except Exception as e:
-        typer.BadParameter(f"Error: {str(e)}")
+        typer.echo(f"✗ Error: {e}", err=True)
+        raise typer.Exit(1)
 
 def pause_job(identifier: str) -> Job:
     """
@@ -1083,7 +1184,10 @@ def pause_job(identifier: str) -> Job:
         raise ValueError(f"Job '{job.name}' has no ID")
     
     try:
-        scheduler.pause_job(job_id)
+        if scheduler.get_job(job_id) is not None:
+            scheduler.pause_job(job_id)
+    except JobLookupError:
+        pass
     except Exception as e:
         raise RuntimeError(f"Failed to pause: {e}")
     

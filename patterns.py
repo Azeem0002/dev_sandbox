@@ -407,14 +407,50 @@ Yes, many things can be automated. Here's what you should NOT manually code:
 
  Pattern	        Library  	             What it automates
 ====================================================================================
-- Retries	        tenacity	             Transient failures, backoff, jitter
-- Logging	        loguru	                 File rotation, formatting, levels, context
-- CLI parsing	    typer/click  	         Args, help text, validation, subcommands
-- Background tasks	celery/apscheduler	     Async execution, job queues
-- Rate limiting	    ratelimit	             API throttling, request limiting
+- Retries	        tenacity	                Transient failures, backoff, jitter
+- Logging	        loguru	                    File rotation, formatting, levels, context
+- CLI parsing	    typer/click  	            Args, help text, validation, subcommands
+- Background tasks	celery/apscheduler	        Async execution, job queues
+- Rate limiting	    ratelimit	                API throttling, request limiting
 - Caching	        cachetools/functools.lru_cache	     Expiring results, memoization
 - Circuit breaker	pybreaker	                 Prevent cascading failures
-- Timeouts	        timeout-decorator	             Prevent hanging operations
+- Timeouts	        timeout-decorator	         Prevent hanging operations
 - Health checks	    health-check	             Service liveness monitoring
-- Metrics	            prometheus_client	                 Counters, gaugues, histograms
+- Metrics	        prometheus_client	         Counters, gaugues, histograms
+"""
+
+# Layer Model for file structure
+
+# usually adapter/ infrastructure
+""" 
+framework/IO/external-system code
+adapters are boundaries that touches the outside world.
+e.g db, cli, os service install, filesystem, HTTP or external libs/frameworks
+"""
+
+# orchestration/ application
+"""
+coordination of steps/use cases
+e.g use cases, coordinates ports, transactions,
+retries/workflow sequencing, returns app-level results
+
+rules:
+orchestration should accept already-cleaned input models or parse boundary input into models early
+orchestration should return app-level results, not raw framework objects
+orchestration does not have to only return “parsed data”; it can return domain results, status objects, or errors
+"""
+
+
+# core/domain
+"""
+touches low level functions.
+business meaning/rules
+business rules, invariants, domain entities/value objects, policy decisions
+"""
+# Hexagonal rules
+"""
+core: decides
+orchestration: coordinates
+adapters: perform
+cli: collects/displays
 """
