@@ -25,7 +25,115 @@
   - External/OS adapters
 - Give rules of thumb and practical engineering judgment where useful.
 
+# Number and answer all questions and sub questions by order
 
+1. is this: if self.schedule_type is ScheduleType.ONCE:
+the same as this:
+if self.schedule_type == ScheduleType.ONCE:
+* if both are correct, which is recommended?
+2. explain what's going on here using simple terms and why they're structured that way:
+def _coerce_job_scheduled_time( 
+    schedule_type: ScheduleType,
+    value: str | datetime | None
+) -> datetime | None:
+    """Normalize persisted/input schedule values into Job's datetime field."""
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif schedule_type is ScheduleType.ONCE:
+        parsed = datetime.fromisoformat(value)
+    else:
+        hour, minute = map(int, value.split(":"))
+        # Weekly jobs only need a stable local time-of-day anchor.
+        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+* what does this mean datetime.fromisofrmat(value)?
+* explain how this are mutually exclusive:
+if isinstance(value, datetime):
+        parsed = value
+    elif schedule_type is ScheduleType.ONCE:
+        parsed = datetime.fromisoformat(value)
+    else:
+        hour, minute = map(int, value.split(":"))
+        # Weekly jobs only need a stable local time-of-day anchor.
+        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
+* what does this mean in simple translation:
+if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+* explain this:
+  else:
+        hour, minute = map(int, value.split(":"))
+        # Weekly jobs only need a stable local time-of-day anchor.
+        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
+
+3. what's the difference between this three:
+def _coerce_job_scheduled_time( 
+    schedule_type: ScheduleType,
+    value: str | datetime | None
+) -> datetime | None:
+    """Normalize persisted/input schedule values into Job's datetime field."""
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        parsed = value
+    elif schedule_type is ScheduleType.ONCE:
+        parsed = datetime.fromisoformat(value)
+    else:
+        hour, minute = map(int, value.split(":"))
+        # Weekly jobs only need a stable local time-of-day anchor.
+        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ) # expected 2 positional argument herein my version. what does it mean?
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def _serialize_scheduled_time(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _format_scheduled_time(job: Job) -> str:
+    if job.scheduled_time is None:
+        return "-"
+    if job.schedule_type is ScheduleType.WEEKLY:
+        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
+    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+* difference between this: parsed = datetime.fromisoformat(value)
+and this: return value.isoformat()
+* this function seems redundant since it's already in coerce function: def _serialize_scheduled_time(value: datetime | None) -
+* what's the diff between the three
+* explain this:
+if job.schedule_type is ScheduleType.WEEKLY:
+        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
+    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
+* tis this the only format there is: ("%Y-%m-%d %H:%M")
+3.  what exactly is the job of pydantic in simple terms and analogy?
+4. DeepSeek 
+Winner: Version A (if/if with raise at end)
+
+Why:
+
+· Both work identically (early return exits function)
+· Version A is cleaner (less nesting)
+· elif is redundant when first branch returns
+
+Rule of thumb: If each branch returns, use if. If continuing execution, use elif.
+Vs chatgpt:
+Best fix
+Use elif → clearer intent
+Performance difference = negligible
+5. is scheduler program is tied to its job, can we use start_new_session to make job child process in subprocess.run()?
+
+# To Fix from root problems not symptoms
 1. 
 
 
