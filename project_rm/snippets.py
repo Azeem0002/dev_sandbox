@@ -13,7 +13,7 @@ import time
 import shlex
 import subprocess
 from tenacity import retry, stop_after_attempt, wait_exponential
-from typing import Literal, Any
+from typing import Literal, Any, cast
 
 from enum import StrEnum
 class ScheduleType(StrEnum):
@@ -120,17 +120,23 @@ class Job:
     next_runtime: datetime
     status: JobStatus= JobStatus.ACTIVE
 
-def _coerce_job_schedule_time(
-        schedule_type: ScheduleType,
-        value: str
-)-> datetime | None:
+
+from zoneinfo import ZoneInfo
+APP_CONFIG= AppConfig()
+STORAGE_TZ= ZoneInfo(APP_CONFIG.storage_timezone)
+LOCAL_TZ= ZoneInfo(APP_CONFIG.local_timezone)
+
+def _coerce_schedule_time(value: str |datetime | None, schedule_type: ScheduleType)-> datetime | None:
+
     if value is None:
         return None
     
     if isinstance(value, datetime):
-        parsed= value
+        parsed = value
+    
     elif schedule_type is ScheduleType.ONCE:
         parsed = datetime.fromisoformat(value)
+    
     else:
         hour, minute = map(int, value.split(":"))
         parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
@@ -140,20 +146,19 @@ def _coerce_job_schedule_time(
     return parsed.astimezone(LOCAL_TZ)
 
 def _serialize_scheduled_time(value: datetime | None)-> str | None:
+
     if value is None:
         return None
     return value.isoformat()
 
 def _format_scheduled_time(job: Job)-> str:
+
     if job.scheduled_time is None:
         return "-"
-    if job.scheduled_time is ScheduleType.WEEKLY:
+    
+    if job.schedule_type is ScheduleType.WEEKLY:
         return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
-    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%m")
-
-
-
-
+    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
 
 
 
@@ -180,30 +185,13 @@ def _validated_schedule_type(value: str)-> ScheduleType:
     else:
         raise ValueError("value must be once or weekly")
 
-        
 
+# dirs = PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
+# DB_PATH= Path(dirs.user_data_dir)
 
+dirs= PlatformDirs(AppConfig.app_name, AppConfig.app_author)
+DB_PATH=Path(dirs.user_data_dir)
 
-
-
-
-
-
-
-from zoneinfo import ZoneInfo
-APP_CONFIG= AppConfig()
-STORAGE_TZ= ZoneInfo(APP_CONFIG.storage_timezone)
-LOCAL_TZ= ZoneInfo(APP_CONFIG.local_timezone)
-
-dirs = PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
-DB_PATH= Path(dirs.user_data_dir)
-
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.date import DateTrigger
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.jobstores.base import JobLookupError
-
-scheduler = BackgroundScheduler(APP_CONFIG.local_timezone)
 
 def _setup_env():
 
@@ -250,20 +238,55 @@ def _setup_logger(file_log: Path)-> None:
     )
 
 
+import sqlite3
+def _init_db()-> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
+    with sqlite3.connect(DB_PATH) as conn:
 
-    
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA cache_size=-10000;")
+        conn.execute('PRAGMA temp_store=MEMORY;')
+        conn.execute("PRAGMA busy_timeout=5000;")
 
-    
-
-
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+                     id TEXT PRIMARY KEY,
+                     name TEXT
+                     command TEXT
+                     scheduled_type TEXT
+                     days_of_week TEXT
+                     scheduled_time TEXT
+                     next_run TEXT
+                     status TEXT NOT NULL DEFAULT 'active'
+                     )""")
         
-        
+        remove_count = _cleanup_jobs_table(conn)
 
-    
+def _cleanup_jobs_table(conn: sqlite3.Connection)-> int:
+    conn.row_factory= sqlite3.Row
+    rows= conn.execute("""
+        SELECT id, name, next_runtime
+        FROM jobs
+        ORDER BY next_runtime, id
+    """).fetchall()
 
-    
-    
+    invalid_ids: list[str] = []
+    duplicate_ids: list[str] = []
+    seen_names: set[str]= set()
+
+    for row in rows:
+        job_id = cast(str | None, row["id"])
+        raw_name = cast(str, row["name" or ""])
+
+        try:
+            normalized_name= _normalize_name_key(raw_name)
+
+def _normalize_name_key(value: str)-> str:
+    return _validate_name(value)
+
+
 
 app = typer.Typer()
 
@@ -271,6 +294,7 @@ app = typer.Typer()
 def init():
     file_log= _setup_env()
     _setup_logger(file_log)
+
 
 if __name__=="__main__":
     app()

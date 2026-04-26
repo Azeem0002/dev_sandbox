@@ -10,17 +10,15 @@ import sqlite3
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from loguru import logger
-from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from platformdirs import PlatformDirs
+from dataclasses import dataclass
 import os
+import threading
 import typer
 import time
-import sys
-import uuid
 import shlex
-import getpass
+import uuid
 import json
 import signal
 import subprocess
@@ -40,6 +38,42 @@ from apscheduler.jobstores.base import JobLookupError               # "Job not f
 # ============================================
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+try:
+    from .application import (
+        get_scheduler_status as _get_scheduler_status,
+        start_scheduler as _start_scheduler,
+        stop_scheduler as _stop_scheduler,
+    )
+    from .lifecycle_models import SchedulerStatus
+    from .platform_adapter import _detect_platform
+    from .process_adapter import (
+        _get_active_scheduler_pid,
+        _get_pid_file_path,
+        _remove_pid_file,
+        _spawn_detached_scheduler,
+        _write_pid_file,
+        stop_scheduler_process,
+    )
+    from .runtime_support import _get_platform_dirs, _setup_env, _setup_logger
+    from .systemd_adapter import install_scheduler_service
+except ImportError:
+    from application import (
+        get_scheduler_status as _get_scheduler_status,
+        start_scheduler as _start_scheduler,
+        stop_scheduler as _stop_scheduler,
+    )
+    from lifecycle_models import SchedulerStatus
+    from platform_adapter import _detect_platform
+    from process_adapter import (
+        _get_active_scheduler_pid,
+        _get_pid_file_path,
+        _remove_pid_file,
+        _spawn_detached_scheduler,
+        _write_pid_file,
+        stop_scheduler_process,
+    )
+    from runtime_support import _get_platform_dirs, _setup_env, _setup_logger
+    from systemd_adapter import install_scheduler_service
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -56,63 +90,10 @@ STORAGE_TZ = ZoneInfo(APP_CONFIG.storage_timezone)
 LOCAL_TZ = ZoneInfo(APP_CONFIG.local_timezone)
 
 # Platform-appropriate data directory
-dirs = PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
+dirs = _get_platform_dirs()
 DB_PATH = Path(dirs.user_data_dir) / "jobs.db"
-PID_PATH = Path(dirs.user_data_dir) / "scheduler.pid"
 
 scheduler = BackgroundScheduler(timezone=LOCAL_TZ)
-
-# =======================================================
-#   SETUP ENVIRONMENT & LOGGING CONFIGURATION
-# =======================================================
-
-def _setup_env()-> Path:
-
-    LOG_DIR= Path(dirs.user_log_dir)
-
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        logger.debug(f"Failed to create directory")
-        raise PermissionError(f"Failed to create directory") from e
-    
-    file_log= LOG_DIR / "scheduler.log"
-    return file_log
-
-def _setup_logger(file_log: Path)-> None:
-
-    ENV= os.getenv("APP_ENV", "dev") # key value pair
-    logger.remove()
-    
-    if ENV== "prod":
-        logger.add(
-            sink=sys.stdout,
-            level="INFO"
-        )
-    else:
-        logger.add(
-            sink= sys.stdout,
-            level= "DEBUG",
-            format= "<cyan>{time:YYYY-MM-DD HH:mm:ss}</cyan> | "
-                    "{level: <8} | "
-                    "{module}.{function}:{line} | "
-                    "<level>{message}</level>",
-            colorize=True,
-            backtrace=True
-        )
-    logger.add(
-        sink=file_log,
-        level="DEBUG",
-        format= "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}.{function}:{line} | {message}",
-        rotation= "1 MB",
-        retention= "3 days",
-        compression="zip", # or "gz"
-        enqueue=True,
-        serialize= False,
-        backtrace=False,
-        diagnose=False, # diagnose=True can expose: variables in secrets, file paths, internal state
-        catch=False,    
-    )
 
 # ============================================
 # MODELS
@@ -144,7 +125,7 @@ class AddJobInput(BaseModel): #Job application form
     @field_validator("name") # Inspecting each ingredient separately
     @classmethod  # Called on the class, before instance exists
     def _adapt_name_for_model(cls, value: str) -> str: # cls: because the instance doesn't exist yet
-        return _validate_name(value)
+        return _require_non_empty_text(value, "Name")
 
     @field_validator("command", mode="before") 
     # field_validator must match the exact field name in your model
@@ -203,75 +184,8 @@ class Job: # Employee record after hiring
 
 
 # ============================================
-# OS LAYER (I/O, no CLI output)
-# ============================================
-
-def _detect_platform() -> str:
-    if os.name == "nt":  # Uses Task Scheduler
-        return "windows"
-
-    if sys.platform.startswith("linux"): # Uses systemd
-    # os.name == "posix" would incorrectly assume macOS uses systemd. It doesn't.
-        return "linux"
-
-    if sys.platform == "darwin":  # Uses launched
-        return "mac"
-
-    return "unknown"
-
-def _format_exec_args(args: list[str]) -> str:
-    return " ".join(shlex.quote(arg) for arg in args)
-
-
-def _build_systemd_service(*, system: bool) -> str:
-    """Generate systemd service file content"""
-    service_lines = [
-        "[Unit]",
-        "Description=Job Scheduler",
-        "After=network.target",
-        "",
-        "[Service]",
-        "Type=simple",
-    ]
-
-    if system:
-        service_lines.append(f"User={getpass.getuser()}")
-
-    service_lines.extend([
-        f"WorkingDirectory={Path(__file__).parent.resolve()}",
-        f"ExecStart={_format_exec_args([sys.executable, str(Path(__file__).resolve()), 'start'])}",
-        "Restart=on-failure",
-        "RestartSec=10",
-        "MemoryMax=200M",
-        "CPUQuota=50%",
-        "StandardOutput=journal",
-        "StandardError=journal",
-        "",
-        "[Install]",
-        f"WantedBy={'multi-user.target' if system else 'default.target'}",
-        "",
-    ])
-
-    return "\n".join(service_lines)
-
-
-# ============================================
 # RESPONSIBILITIES (pure core logic)
 # ============================================
-
-def _build_windows_task_command() -> list[str]:
-    task_target = subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve()), "start"])
-
-    return [
-        "schtasks",
-        "/create",
-        "/tn", "Scheduler",
-        "/tr", task_target,
-        "/sc", "onlogon",
-        "/rl", "limited",
-        "/f"
-    ]
-    
 
 # Core input: General type, output: Parsed/Validated values 
 # Auto convert/force one type to another
@@ -280,7 +194,7 @@ def _coerce_job_scheduled_time(
     value: str | datetime | None
 ) -> datetime | None:
     """Normalize persisted/input schedule values into Job's datetime field.
-        A universal translator that converts different time formats into one standard format (UTC datetime
+        A universal translator that converts different time input formats into one standard format (UTC datetime)
     """
     if value is None:
         return None  # Nothing to convert
@@ -289,12 +203,15 @@ def _coerce_job_scheduled_time(
         parsed = value  # Already datetime "2026-04-22T15:30", no parsing needed
 
     elif schedule_type is ScheduleType.ONCE:  # String for once
-        parsed = datetime.fromisoformat(value)  # Converts "2026-04-22T15:30" → datetime(2026, 4, 22, 15, 30)
-    
+        parsed = datetime.fromisoformat(value)  # Converts ISO str format "2026-04-22T15:30" → datetime(2026, 4, 22, 15, 30) datetime object
+        # fromisoformat(): string → datetime
+        # ISO = International Organization for Standardization
+
     else:   # String for weekly
         hour, minute = map(int, value.split(":"))  # "09:00" → hour=9, minute=0
         # Weekly jobs only need a stable local time-of-day anchor.
-        
+        # map(): Apply this function to every item in this list. map(int) converts the splitted time values both to int
+
         # Creates a fake date (year 2000) with real time
         parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
         # Why year 2000? It's a stable anchor—weekly only cares about time-of-day
@@ -303,23 +220,31 @@ def _coerce_job_scheduled_time(
         # Weekly jobs: repeat every week.we only care about TIME, not DATE
 
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=LOCAL_TZ)  #“If time has no timezone, assume/attach local timezone”
+        return parsed.replace(tzinfo=LOCAL_TZ)  #“If time has no timezone, assume/attach local timezone
     return parsed.astimezone(LOCAL_TZ)  # Convert time/clock into local timezone safely
+    # This prevents: wrong scheduling due to timezone mismatch
+    # Result: datetime(2026, 4, 24, 15, 30, tzinfo=ZoneInfo("Africa/Lagos"))
 
-
+# Persistence layer
 def _serialize_scheduled_time(value: datetime | None) -> str | None:
+    """
+    STORAGE FORMATTER: datetime → string for DB / JSON
+    """
     if value is None:
         return None
-    return value.isoformat()
-
+    return value.isoformat() # isoformat(): Converts Datetime → string (for DB / JSON)
+    # isoformat(): Machine storage (database)
 
 def _format_scheduled_time(job: Job) -> str:
+    """
+    DISPLAY FORMATTER: datetime → UI human-readable string
+    """
     if job.scheduled_time is None:
         return "-"
     if job.schedule_type is ScheduleType.WEEKLY:
-        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
-    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
-
+        # strftime(): Human display (CLI)
+        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")  # strftime("%H:%M"): convert datetime → "14:30"
+    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M") # .astimezone(): converts datetime to the current timezone
 
 def _create_trigger(
     schedule_type: ScheduleType,
@@ -561,11 +486,11 @@ def _init_db()-> None:
         
         
         # === PERFORMANCE & SAFETY SETTINGS ===
-        conn.execute("PRAGMA journal_mode=WAL;")       # Concurrent reads/writes
-        conn.execute("PRAGMA synchronous=NORMAL;")     # Balance safety/speed
-        conn.execute("PRAGMA cache_size=-10000;")      # 10MB cache
-        conn.execute("PRAGMA temp_store=MEMORY;")      # Temp tables in RAM
-        conn.execute("PRAGMA busy_timeout=5000;")      # Wait 5s on locks
+        conn.execute("PRAGMA journal_mode=WAL;") # Concurrent reads/writes
+        conn.execute("PRAGMA synchronous=NORMAL;") # Balance safety/speed
+        conn.execute("PRAGMA cache_size=-10000;") # 10MB cache
+        conn.execute("PRAGMA temp_store=MEMORY;") # Temp tables in RAM
+        conn.execute("PRAGMA busy_timeout=5000;") # Wait 5s on locks
         
 
         conn.execute("""
@@ -619,7 +544,7 @@ def _insert_job(job: Job) -> Job:
                 job.schedule_type.value,
                 json.dumps(job.days_of_week), # if you serialize → always deserialize symmetrically
                 _serialize_scheduled_time(job.scheduled_time),
-                job.next_runtime.isoformat(),
+                job.next_runtime.isoformat(), # machine language format
                 job.status.value
             ))
         except sqlite3.IntegrityError as e:
@@ -727,93 +652,44 @@ def _count_jobs_by_status() -> dict[str, int]:
     return counts
 
 
-def _read_pid_file() -> int | None:
-    try:
-        raw_pid = PID_PATH.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return None
-
-    try:
-        return int(raw_pid)
-    except ValueError:
-        logger.warning(f"Invalid PID file contents at {PID_PATH}")
-        PID_PATH.unlink(missing_ok=True)
-        return None
-
-
-def _is_scheduler_process(process: psutil.Process) -> bool:
-    try:
-        cmdline = process.cmdline()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return False
-
-    script_path = str(Path(__file__).resolve())
-    return any(part == script_path or part.endswith("scheduler.py") for part in cmdline)
-
-
-def _get_process(pid: int) -> psutil.Process | None:
-    try:
-        process = psutil.Process(pid)
-        if not process.is_running():
-            return None
-        if process.status() == psutil.STATUS_ZOMBIE:
-            return None
-        return process
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return None
-
-
-def _write_pid_file() -> None:
-    PID_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
-
-
-def _remove_pid_file() -> None:
-    PID_PATH.unlink(missing_ok=True)
-
-
-def _get_active_scheduler_pid() -> int | None:
-    pid = _read_pid_file()
-    if pid is None:
-        return None
-
-    process = _get_process(pid)
-    if process is not None and _is_scheduler_process(process):
-        return process.pid
-
-    logger.warning(f"Removing stale PID file for invalid scheduler process {pid}")
-    _remove_pid_file()
-    return None
-
-
-def _spawn_detached_scheduler() -> int:
-    existing_pid = _get_active_scheduler_pid()
-    if existing_pid is not None:
-        raise RuntimeError(f"Scheduler is already running (PID {existing_pid})")
-
-    script_path = Path(__file__).resolve()
-    process = subprocess.Popen(
-        [sys.executable, str(script_path), "start", "--foreground"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        close_fds=True,
+def get_scheduler_status() -> SchedulerStatus:
+    return _get_scheduler_status(
+        counts=_count_jobs_by_status(),
+        local_timezone=LOCAL_TZ,
     )
 
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        active_pid = _get_active_scheduler_pid()
-        if active_pid is not None:
-            return active_pid
 
-        exit_code = process.poll()
-        if exit_code is not None:
-            raise RuntimeError(f"Detached scheduler failed to start (exit {exit_code})")
+def _build_scheduler_stopped_status(
+    counts: dict[str, int],
+    pid_file: Path,
+) -> SchedulerStatus:
+    return SchedulerStatus(
+        is_running=False,
+        pid=None,
+        process_status=None,
+        started_at=None,
+        pid_file=pid_file,
+        active_jobs=counts.get(JobStatus.ACTIVE.value, 0),
+        paused_jobs=counts.get(JobStatus.PAUSED.value, 0),
+    )
 
-        time.sleep(0.1)
 
-    raise RuntimeError("Detached scheduler did not create a PID file in time")
+def _build_scheduler_running_status(
+    pid: int,
+    counts: dict[str, int],
+    pid_file: Path,
+) -> SchedulerStatus:
+    process = psutil.Process(pid)
+    started_at = datetime.fromtimestamp(process.create_time(), LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")  # strftime(): UI format
+    return SchedulerStatus(
+        is_running=True,
+        pid=pid,
+        process_status=str(process.status()),
+        started_at=started_at,
+        pid_file=pid_file,
+        active_jobs=counts.get(JobStatus.ACTIVE.value, 0),
+        paused_jobs=counts.get(JobStatus.PAUSED.value, 0),
+    )
 
 def _normalize_optional_text(value: str | None) -> str | None:
     if value is None:
@@ -828,10 +704,7 @@ def _require_non_empty_text(value: str, field_name: str) -> str:
     return cleaned
 
 def _normalize_name_key(value: str) -> str:
-    return _validate_name(value).casefold()
-
-def _validate_name(value: str) -> str:
-    return _require_non_empty_text(value, "Name")
+    return _require_non_empty_text(value, "Name").casefold()
 
 def _validate_command_parts(value: list[str]) -> list[str]:
     if not value:
@@ -872,57 +745,13 @@ def _normalize_days_list(value: list[int] | None) -> list[int] | None:
     return normalized
 
 def _validate_unique_job_name(value: str) -> str:
-    cleaned = _validate_name(value)
+    cleaned = _require_non_empty_text(value, "Name")
     existing = _find_job_by_name(cleaned)
     if existing is not None:
         raise ValueError(
             f"Job name '{cleaned}' already exists ({_format_job_id(existing.id)}). Use a different name."
         )
     return cleaned
-
-# --- PERSISTENCE/OS LAYER (I/O) ---
-def _install_windows_task() -> None:
-    cmd = _build_windows_task_command()
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create task: {result.stderr.strip()}")
-
-def _install_systemd_user(content: str) -> Path:
-    """Write service file to user's systemd directory"""
-    path = Path.home() / ".config/systemd/user/scheduler.service"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
-
-def _install_systemd_system(content: str) -> Path:
-    """Write service file to system systemd directory (requires sudo)"""
-    path = Path("/etc/systemd/system/scheduler.service")
-    
-    try:
-        result = subprocess.run(
-            ["sudo", "tee", str(path)],
-            input=content,
-            text=True,
-            capture_output=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr)
-        return path
-    except Exception:
-        # Fallback: Show manual instructions
-        typer.echo("\n✗ Automated install failed. Run manually:")
-        typer.echo(f"  echo '{content}' | sudo tee {path}")
-        typer.echo("  sudo systemctl daemon-reload")
-        typer.echo("  sudo systemctl enable scheduler")
-        typer.echo("  sudo systemctl start scheduler")
-        raise typer.Exit(1)
-      
-# /////////////////////////////////////////////////
-# //////////////////////////////////////////////////
-
-
 
 # ===== VALIDATORS (Pure functions, no I/O) =====
 
@@ -951,6 +780,7 @@ def _validate_time_24h(value: str) -> str:
     """Parse 24-hour time, return HH:MM"""
     try:
         hour, minute = map(int, value.strip().split(":"))
+        # map(): Apply this function to every item in this list.
         if 0 <= hour <= 23 and 0 <= minute <= 59:
             return f"{hour:02d}:{minute:02d}"
         raise ValueError
@@ -981,100 +811,35 @@ def _parse_days_input(value: str) -> list[int]:
             raise
         raise ValueError("Use comma-separated numbers (e.g., 1,3,5)")
 
-def _parse_command_input(cmd: str)-> str: 
-    """Validate CLI command text and keep it raw at the boundary."""
-    _normalize_command_input(cmd)
-    return _normalize_command_text(cmd)
 
-# ============================================
-# ORCHESTRATION (public API)
-# ============================================
+def _parse_command_input(value: str) -> str:
+    """Validate CLI command text and return the cleaned raw command."""
+    _normalize_command_input(value)
+    return _normalize_command_text(value)
 
-def install_service(system: bool = False) -> tuple[str, list[str]]:
-    """
-    Install service for current platform.
-    
-    Args:
-        system: If True, install system-wide (requires sudo on Linux)
-    
-    Returns:
-        (success_message, next_steps_list)
-    """
-    platform = _detect_platform()
-    
-    if platform == "windows":
-        _install_windows_task()
-        return (
-            "✓ Windows Task 'Scheduler' created",
-            ["Task will run when the current user logs on"]
-        )
-    
-    elif platform == "linux":
-        content = _build_systemd_service(system=system)
-        
-        if system:
-            path = _install_systemd_system(content)
-            return (
-                f"✓ System service installed at {path}",
-                [
-                    "sudo systemctl daemon-reload",
-                    "sudo systemctl enable scheduler",
-                    "sudo systemctl start scheduler"
-                ]
-            )
-        else:
-            path = _install_systemd_user(content)
-            return (
-                f"✓ User service installed at {path}",
-                [
-                    "systemctl --user daemon-reload",
-                    "systemctl --user enable scheduler",
-                    "systemctl --user start scheduler",
-                    f"loginctl enable-linger {getpass.getuser()}"
-                ]
-            )
-    
-    elif platform == "mac":
-        return (
-            "✗ macOS not yet supported",
-            ["Use launchd manually or run with --daemon flag"]
-        )
-    
-    else:
-        raise RuntimeError(f"Unsupported platform: {platform}")
-
-    
-# input/output: dataclass
-def add_jobs(data: AddJobInput) -> Job:
-    """Add a new scheduled job"""
+def create_job(data: AddJobInput) -> Job:
     if _count_jobs() >= APP_CONFIG.max_jobs:
         raise ValueError("Maximum of 100 jobs reached")
-    _validate_unique_job_name(data.name)
-    
-    # Ensure job has ID before scheduling
-    job = _build_job(data)
-    if job.id is None:
-        job.id = str(uuid.uuid4())
 
-    
+    _validate_unique_job_name(data.name)
+    job = _build_job(data)
     _schedule_single_job(job)
     return _insert_job(job)
 
-def list_jobs():
-    """Retrieve all jobs"""
 
+def get_jobs() -> list[Job]:
+    """Retrieve all jobs."""
     return _fetch_jobs()
 
 
-def remove_jobs(identifier: str) -> bool:
+def remove_job(identifier: str) -> bool:
     """
-    Remove job from scheduler and database.
-    
-    Args:
-        identifier: Full ID, short ID prefix (min 4 chars), or exact name
+    Flow:
+        remove -> remove_jobs
+        remove_job
+            -> _resolve_job_identifier
+            -> _remove_job_from_db
     """
-
-    # find the job
     job = _resolve_job_identifier(identifier)
     if not job:
         raise ValueError(f"Job '{identifier}' not found")
@@ -1083,13 +848,11 @@ def remove_jobs(identifier: str) -> bool:
     if job_id is None:
         raise ValueError(f"Job '{identifier}' not found")
 
-    # Remove from scheduler memory
     try:
         scheduler.remove_job(job_id)
     except JobLookupError as e:
-        logger.warning(f"Job {job_id} not in scheduler: {e}")  # Not in memory, continue
+        logger.warning(f"Job {job_id} not in scheduler: {e}")
 
-    # Remove from database
     removed = _remove_job_from_db(job_id)
     if removed:
         logger.info(f"Job '{job.name}' ({_format_job_id(job_id)}) removed")
@@ -1097,23 +860,24 @@ def remove_jobs(identifier: str) -> bool:
     return removed
 
 
-def remove_jobs_batch(identifiers: list[str]) -> list[Job]:
+def remove_jobs(identifiers: list[str]) -> list[Job]:
     jobs = [_resolve_job_identifier(identifier) for identifier in identifiers]
     removed_jobs: list[Job] = []
     for job in jobs:
         job_id = job.id or job.name
-        if remove_jobs(job_id):
+        if remove_job(job_id):
             removed_jobs.append(job)
     return removed_jobs
 
-def resume_jobs(identifier: str) -> Job :
+
+def resume_job(identifier: str) -> Job:
     """
-    Resume a paused job.
-    
-    Args:
-        identifier: Full ID, short ID prefix (min 4 chars), or exact name
+    Flow:
+        resume -> resume_jobs
+        resume_job
+            -> _resolve_job_identifier
+            -> scheduler.resume_job
     """
-    # Find the job
     job = _resolve_job_identifier(identifier)
     if not job:
         raise ValueError(f"Job '{identifier}' not found")
@@ -1145,31 +909,30 @@ def resume_jobs(identifier: str) -> Job :
     return job
 
 
-def resume_jobs_batch(identifiers: list[str]) -> list[Job]:
+def resume_jobs(identifiers: list[str]) -> list[Job]:
     jobs = [_resolve_job_identifier(identifier) for identifier in identifiers]
-    return [resume_jobs(job.id or job.name) for job in jobs]
+    return [resume_job(job.id or job.name) for job in jobs]
     
 
 
-def start_scheduler_daemon() -> None:
+def run_scheduler_foreground() -> None:
     existing_pid = _get_active_scheduler_pid()
     if existing_pid is not None:
         raise RuntimeError(f"Scheduler is already running (PID {existing_pid})")
 
-    stop_requested = False
+    stop_event = threading.Event()
 
-    def _request_stop(signum: int, frame: Any) -> None:
-        nonlocal stop_requested
-        stop_requested = True
+    def _handle_shutdown_signal(signum: int, frame: Any) -> None:
+        stop_event.set()
         logger.info(f"Received signal {signum}, shutting down scheduler")
 
     previous_sigint = signal.getsignal(signal.SIGINT)
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     try:
-        signal.signal(signal.SIGINT, _request_stop)
-        signal.signal(signal.SIGTERM, _request_stop)
-        _write_pid_file()
+        signal.signal(signal.SIGINT, _handle_shutdown_signal)
+        signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+        _write_pid_file(os.getpid())
 
         if not scheduler.running:
             scheduler.start()
@@ -1179,7 +942,7 @@ def start_scheduler_daemon() -> None:
 
         _load_jobs_from_database()
 
-        while not stop_requested:
+        while not stop_event.is_set():
             time.sleep(1)
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
@@ -1192,32 +955,58 @@ def start_scheduler_daemon() -> None:
 
         _remove_pid_file()
 
-def stop_scheduler_daemon(wait: bool = True) -> bool:
-    """Gracefully stop the scheduler"""
-    active_pid = _get_active_scheduler_pid()
-    if active_pid is None:
-        logger.info("Scheduler is not running")
-        return False
+def start_scheduler(foreground: bool = False) -> str:
+    return _start_scheduler(
+        foreground=foreground,
+        run_foreground=run_scheduler_foreground,
+    )
 
+
+def stop_scheduler() -> bool:
+    """
+    Flow:
+        stop -> stop_scheduler
+        stop_scheduler
+            -> stop_scheduler_process
+    """
+    return _stop_scheduler()
+
+
+def pause_job(identifier: str) -> Job:
+    """
+    Flow:
+        pause -> pause_jobs
+        pause_job
+            -> _resolve_job_identifier
+            -> scheduler.pause_job
+    """
+    job = _resolve_job_identifier(identifier)
+    
+    if job.status is JobStatus.PAUSED:
+        raise ValueError(f"Job '{job.name}' is already paused")
+    
+    job_id = job.id
+    if job_id is None:
+        raise ValueError(f"Job '{job.name}' has no ID")
+    
     try:
-        process = psutil.Process(active_pid)
-        process.terminate()
-    except psutil.NoSuchProcess:
-        _remove_pid_file()
-        logger.info("Scheduler is not running")
-        return False
+        if scheduler.get_job(job_id) is not None:
+            scheduler.pause_job(job_id)
+    except JobLookupError:
+        pass
+    except Exception as e:
+        raise RuntimeError(f"Failed to pause: {e}")
+    
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (JobStatus.PAUSED.value, job_id))
+    
+    logger.info(f"Job '{job.name}' ({_format_job_id(job_id)}) paused")
+    return job
 
-    logger.info(f"Sent stop signal to scheduler process {active_pid}")
 
-    if wait:
-        try:
-            process.wait(timeout=10)
-            _remove_pid_file()
-            return True
-        except psutil.TimeoutExpired:
-            logger.warning(f"Scheduler process {active_pid} did not exit within timeout")
-
-    return True
+def pause_jobs(identifiers: list[str]) -> list[Job]:
+    jobs = [_resolve_job_identifier(identifier) for identifier in identifiers]
+    return [pause_job(job.id or job.name) for job in jobs]
 
 # ============================================
 # CLI - Thin wrapper around orchestration
@@ -1321,8 +1110,9 @@ def _parse_once_datetime_input(value: str) -> str:
         return datetime.fromisoformat(value.strip()).isoformat()
     except ValueError as e:
         raise ValueError("Use ISO datetime (e.g., 2026-04-19T13:00)") from e
+        # ISO = International Organization for Standardization
 
-def _collect_interactive_add_input() -> AddJobInput:
+def collect_job_input_interactively() -> AddJobInput:
     """Collect add command input interactively."""
     name = _prompt_until_valid("Job name: ", _validate_unique_job_name, error_prefix="Invalid name")
     command = _prompt_until_valid(
@@ -1365,7 +1155,7 @@ def _collect_interactive_add_input() -> AddJobInput:
         scheduled_time=f"{date_str}T{time_str}"
     )
 
-def _collect_cli_add_input(
+def collect_job_input_from_cli(
     name: str | None,
     command: str | None,
     schedule_type: str | None,
@@ -1414,9 +1204,9 @@ def add(
     """Add a new scheduled job"""
     try:
         if interactive:
-            data = _collect_interactive_add_input()
+            data = collect_job_input_interactively()
         else:
-            data = _collect_cli_add_input(
+            data = collect_job_input_from_cli(
                 name=name,
                 command=command,
                 schedule_type=schedule_type,
@@ -1424,10 +1214,7 @@ def add(
                 scheduled_time=scheduled_time
             )
         
-        # ✅ Step 2: Call orchestrator to create actual Job
-        job = add_jobs(data)
-        
-        # ✅ Step 3: Display from Job object (has .id and .next_runtime)
+        job = create_job(data)
         display_id = _format_job_id(job.id)
         local_time = job.next_runtime.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
         
@@ -1442,7 +1229,7 @@ def add(
 def list_command(verbose: bool = typer.Option(False, "--verbose", "-v")):
     """List all scheduled jobs"""
 
-    jobs = list_jobs()
+    jobs = get_jobs()
     
     if not jobs:
         typer.echo("No jobs scheduled")
@@ -1480,10 +1267,10 @@ def start(
                 typer.echo("Starting scheduler (Windows mode)...")
             else:
                 typer.echo("Starting scheduler (Ctrl+C to stop)...")
-            start_scheduler_daemon()
-        else:
-            pid = _spawn_detached_scheduler()
-            typer.echo(f"✓ Scheduler started in background (PID {pid})")
+
+        message = start_scheduler(foreground=foreground)
+        if not foreground:
+            typer.echo(f"✓ {message}")
     except RuntimeError as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
@@ -1493,8 +1280,8 @@ def start(
 def stop():
     """Stop the scheduler daemon"""
     try:
-        stop = stop_scheduler_daemon()
-        if stop:
+        stopped = stop_scheduler()
+        if stopped:
             typer.echo("✓ Scheduler stopped")
         else:
             typer.echo("Scheduler already stopped")
@@ -1507,66 +1294,23 @@ def stop():
 def status():
     """Show scheduler process status"""
     try:
-        active_pid = _get_active_scheduler_pid()
-        counts = _count_jobs_by_status()
-        total_jobs = counts.get(JobStatus.ACTIVE.value, 0) + counts.get(JobStatus.PAUSED.value, 0)
+        scheduler_status = get_scheduler_status()
 
-        if active_pid is None:
+        if not scheduler_status.is_running:
             typer.echo("Scheduler status: stopped")
         else:
-            process = psutil.Process(active_pid)
-            started_at = datetime.fromtimestamp(process.create_time(), LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            typer.echo(f"Scheduler status: running (PID {active_pid})")
-            typer.echo(f"Process: {process.status()} | started {started_at}")
+            typer.echo(f"Scheduler status: running (PID {scheduler_status.pid})")
+            typer.echo(f"Process: {scheduler_status.process_status} | started {scheduler_status.started_at}")
 
-        typer.echo(f"Jobs: {total_jobs} total | {counts.get(JobStatus.ACTIVE.value, 0)} active | {counts.get(JobStatus.PAUSED.value, 0)} paused")
-        typer.echo(f"PID file: {PID_PATH}")
+        typer.echo(
+            f"Jobs: {scheduler_status.total_jobs} total | "
+            f"{scheduler_status.active_jobs} active | "
+            f"{scheduler_status.paused_jobs} paused"
+        )
+        typer.echo(f"PID file: {scheduler_status.pid_file}")
     except Exception as e:
         typer.echo(f"✗ Error: {e}", err=True)
         raise typer.Exit(1)
-
-def pause_job(identifier: str) -> Job:
-    """
-    Pause a scheduled job.
-    
-    Args:
-        identifier: Full ID, short prefix, or exact name
-    
-    Returns:
-        The paused Job object
-    
-    Raises:
-        ValueError: Job not found or ambiguous
-        RuntimeError: Failed to pause in scheduler
-    """
-    job = _resolve_job_identifier(identifier)
-    
-    if job.status is JobStatus.PAUSED:
-        raise ValueError(f"Job '{job.name}' is already paused")
-    
-    job_id = job.id
-    if job_id is None:
-        raise ValueError(f"Job '{job.name}' has no ID")
-    
-    try:
-        if scheduler.get_job(job_id) is not None:
-            scheduler.pause_job(job_id)
-    except JobLookupError:
-        pass
-    except Exception as e:
-        raise RuntimeError(f"Failed to pause: {e}")
-    
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (JobStatus.PAUSED.value, job_id))
-    
-    logger.info(f"Job '{job.name}' ({_format_job_id(job_id)}) paused")
-    return job
-
-
-def pause_jobs(identifiers: list[str]) -> list[Job]:
-    jobs = [_resolve_job_identifier(identifier) for identifier in identifiers]
-    return [pause_job(job.id or job.name) for job in jobs]
-
     
 
 @app.command()
@@ -1603,7 +1347,7 @@ def remove(
                 typer.echo("Cancelled")
                 raise typer.Exit(0)
 
-        removed_jobs = remove_jobs_batch(identifiers)
+        removed_jobs = remove_jobs(identifiers)
         if not removed_jobs:
             typer.echo("✗ Failed to remove jobs", err=True)
             raise typer.Exit(1)
@@ -1622,7 +1366,7 @@ def resume(
 ):
     """Resume a paused job"""
     try:
-        jobs = resume_jobs_batch(identifiers)
+        jobs = resume_jobs(identifiers)
         for job in jobs:
             typer.echo(f"▶ Job '{job.name}' ({_format_job_id(job.id)}) resumed")
     
@@ -1645,7 +1389,7 @@ def install(
         if platform == "windows" and system:
             typer.echo("⚠️  --system flag ignored on Windows")
         
-        msg, steps = install_service(system)
+        msg, steps = install_scheduler_service(system)
         typer.echo(msg)
         
         if steps:

@@ -25,6 +25,7 @@ import sys
 import os
 import time
 import re
+import json
 import shutil
 import zipfile
 import tarfile
@@ -34,10 +35,10 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Set, Tuple, Callable, Iterator, Optional
 from functools import partial, wraps
-from contextlib import contextmanager
 
 import typer
 from loguru import logger
+from platformdirs import PlatformDirs
 from tqdm import tqdm
 
 # =============================================================================
@@ -451,9 +452,21 @@ def parse_conflict_strategy(value: str) -> Validated[ConflictStrategy]:
 # CONFIGURATIONS & DOMAIN MODELS
 # =============================================================================
 
-MAX_FILES: int = 10000
-BACKUP_DIR: Path = Path.home() / ".file_organizer" / "backups"
-LOG_DIR: Path = Path.home() / ".file_organizer" / "logs"
+@dataclass(frozen=True)
+class AppConfig:
+    app_name: str = "organizer"
+    app_author: str = "Al-Azeem"
+    max_files: int = 10000
+    backup_retry_attempts: int = 2
+
+
+APP_CONFIG = AppConfig()
+APP_DIRS = PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
+MAX_FILES: int = APP_CONFIG.max_files
+BACKUP_DIR: Path = Path(APP_DIRS.user_data_dir) / "backups"
+LOG_DIR: Path = Path(APP_DIRS.user_log_dir)
+STATE_DIR: Path = Path(APP_DIRS.user_state_dir)
+ORGANIZE_STATE_PATH: Path = STATE_DIR / "organize_state.json"
 
 
 class ConflictStrategy(Enum):
@@ -489,11 +502,64 @@ class OrganizationResult:
     operations: List[Tuple[Path, Path]] = field(default_factory=list)  # Move operations
     discovered_categories: Set[str] = field(default_factory=set)  # All categories found
 
+
+@dataclass(frozen=True)
+class OrganizeFilesInput:
+    source_dir: Path
+    dry_run: bool = True
+    conflict_strategy: ConflictStrategy = ConflictStrategy.SKIP
+    recursive: bool = False
+    max_files: int = MAX_FILES
+    backup: bool = False
+
+
+@dataclass(frozen=True)
+class BackupCommandInput:
+    source_dir: Path
+    backup_dir: Path = BACKUP_DIR
+    compress: bool = True
+    compression_format: str = "zip"
+
+
+@dataclass(frozen=True)
+class DirectoryAnalysis:
+    source_dir: Path
+    file_count: int
+    category_counts: dict[str, int]
+
+    @property
+    def categories(self) -> list[str]:
+        return sorted(self.category_counts)
+
+
+@dataclass
+class OrganizeOperationState:
+    source_dir: str
+    conflict_strategy: str
+    recursive: bool
+    max_files: int
+    started_at: str
+    completed_paths: list[str] = field(default_factory=list)
+
 # =============================================================================
 # CORE UTILITIES - Single responsibility functions
 # =============================================================================
 
-def setup_logging() -> None:
+def _setup_env() -> Path:
+    """Create organizer storage directories and return the log file path."""
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        logger.error(
+            f"Cannot create directories. "
+            f"Check write permissions for: {BACKUP_DIR.parent} and {LOG_DIR}"
+        )
+        raise PermissionError(f"Directory creation failed: {e}")
+    return LOG_DIR / "organizer.log"
+
+
+def _setup_logger(log_file: Path) -> None:
     """Setup dual logging: console for users, file for debugging."""
     file_level = "DEBUG"
     user_level = "INFO"
@@ -524,20 +590,6 @@ def setup_logging() -> None:
         backtrace=True,
         catch=True,
     )
-
-
-def ensure_directories_exist() -> None:
-    """Create required directories if they don't exist."""
-    try:
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        logger.debug(f"Directories ensured: {BACKUP_DIR}, {LOG_DIR}")
-    except PermissionError as e:
-        logger.error(
-            f"Cannot create directories. "
-            f"Check write permissions for: {BACKUP_DIR.parent} and {LOG_DIR}"
-        )
-        raise PermissionError(f"Directory creation failed: {e}")
 
 
 def extract_file_category(
@@ -1113,35 +1165,6 @@ def with_retry(max_attempts: int = 3):
         return wrapper
     return decorator
 
-
-@contextmanager
-def with_dry_run(enabled: bool = True):
-    """Context manager for dry-run mode (no actual changes)."""
-    if enabled:
-        logger.info("🧪 DRY RUN MODE - No changes will be made")
-        original_move = shutil.move
-        original_mkdir = Path.mkdir
-        
-        def dry_move(src, dst_dir):
-            logger.info(f"WOULD move: {src} → {dst_dir}")
-            return dst_dir
-        
-        def dry_mkdir(self, *args, **kwargs):
-            logger.info(f"WOULD create directory: {self}")
-            return self
-        
-        shutil.move = dry_move
-        Path.mkdir = dry_mkdir
-        
-        try:
-            yield
-        finally:
-            shutil.move = original_move
-            Path.mkdir = original_mkdir
-    else:
-        yield
-
-
 # =============================================================================
 # DISK SPACE MANAGEMENT - Critical for backup operations
 # =============================================================================
@@ -1319,723 +1342,436 @@ class DiskSpaceManager:
             return True, None  # Assume OK if we can't check
 
 # =============================================================================
-# BACKUP ORCHESTRATOR - Complete backup system with disk space management
+# BACKUP APPLICATION
 # =============================================================================
 
-class BackupOrchestrator:
-    """
-    Orchestrates backup operations with security and progress tracking.
-    
-    KEY FEATURES:
-    1. Disk space management (pre-check and monitoring)
-    2. Secure validation of all paths
-    3. Compression options (ZIP, TAR.GZ)
-    4. Progress tracking and comprehensive logging
-    5. Cleanup on failure
-    6. Backup listing and restoration
-    
-    DESIGN:
-        - Single responsibility: Only handles backup operations
-        - Validation-first: All inputs validated before any operations
-        - Error isolation: One backup failure doesn't affect system
-        - User feedback: Clear progress and completion messages
-    """
-    
-    # Configuration constants
-    MAX_FILES = 1_000_000  # Safety limit for file counting
-    BACKUP_RETRY_ATTEMPTS = 2
-    
-    def __init__(self, backup_dir: Path = BACKUP_DIR):
-        self.backup_dir = backup_dir
-        self.disk_manager = DiskSpaceManager()
-    
-    @with_logging
-    @with_retry(max_attempts=BACKUP_RETRY_ATTEMPTS)
-    def create_backup(
-        self,
-        source_dir: Path,
-        *,
-        compress: bool = True,
-        compression_format: str = "zip"
-    ) -> Path | None:
-        """
-        Create a complete backup of source directory.
-        
-        STEPS:
-        1. Validate source directory
-        2. Check disk space BEFORE starting
-        3. Create unique backup directory with timestamp
-        4. Copy all files with progress tracking and space monitoring
-        5. Optionally compress backup
-        6. Return path to backup (directory or archive)
-        
-        SECURITY:
-            - All paths validated before use
-            - Symlink protection
-            - Path traversal prevention
-            - Principle of least privilege (read source, write destination)
-        """
-        logger.info(f"Starting backup of {source_dir}")
-        
-        # 1. Validate source
-        source_validation = parse_backup_source(source_dir)
-        if source_validation.is_invalid:
-            error_messages = "\n".join(str(e) for e in source_validation.errors)
-            raise ValidationError(f"Invalid backup source:\n{error_messages}")
-        
-        validated_source = source_validation.value
-        if validated_source is None:
-            raise ValidationError("Source validation returned None")
-        
-        # 2. Create unique backup directory
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        backup_name = f"backup_{validated_source.name}_{timestamp}"
-        backup_path = self.backup_dir / backup_name
-        
-        try:
-            # 3. Check disk space BEFORE creating anything
-            has_space, error_msg, estimated_size = self.disk_manager.check_space_for_backup(
-                validated_source, 
-                self.backup_dir,
-                estimate_only=True
-            )
-            
-            if not has_space:
-                raise ValidationError(f"Cannot create backup: {error_msg}")
-            
-            if error_msg:  # Warning but not fatal
-                logger.warning(error_msg)
-            
-            if estimated_size:
-                logger.info(f"Estimated backup size: {estimated_size/1024**3:.1f} GB")
-            
-            # Clean up if directory already exists (shouldn't happen with timestamp)
-            if backup_path.exists():
-                logger.warning(f"Cleaning existing backup directory: {backup_path}")
-                shutil.rmtree(backup_path, ignore_errors=True)
-            
-            # Create backup directory
-            backup_path.mkdir(parents=True, exist_ok=True)
-            logger.debug(f"Created backup directory: {backup_path}")
-            
-            # 4. Copy files with progress and space monitoring
-            files_copied = self._copy_directory_with_space_monitoring(validated_source, backup_path)
-            
-            if files_copied == 0:
-                logger.warning(f"No files copied from {validated_source}")
-                # Delete empty backup directory
-                backup_path.rmdir()
-                return None
-            
-            logger.success(f"✅ Backup created: {backup_path} ({files_copied:,} files)")
-            
-            # 5. Optional compression
-            if compress and files_copied > 0:
-                archive_path = self._compress_backup(backup_path, compression_format)
-                if archive_path:
-                    # Remove uncompressed directory after successful compression
-                    shutil.rmtree(backup_path, ignore_errors=True)
-                    logger.info(f"✅ Compressed backup: {archive_path}")
-                    return archive_path
-            
-            return backup_path
-            
-        except Exception as e:
-            # Cleanup on failure
-            logger.error(f"Backup failed: {e}")
-            self._cleanup_failed_backup(backup_path)
-            return None
-    
-    def _copy_directory_with_space_monitoring(self, src_dir: Path, dst_dir: Path) -> int:
-        """
-        Copy directory with continuous disk space monitoring.
-        """
-        # Validate destination
-        dest_validation = parse_backup_destination(dst_dir)
-        if dest_validation.is_invalid:
-            error_messages = "\n".join(str(e) for e in dest_validation.errors)
-            raise ValidationError(f"Invalid backup destination:\n{error_messages}")
-        
-        # Count files
-        total_items = 0
-        total_files = 0
-        file_paths = []
-        
-        for item in src_dir.rglob("*"):
-            total_items += 1
-            if total_items > self.MAX_FILES:
-                raise ValidationError(f"Directory too large (> {self.MAX_FILES:,} items)")
-            
-            if item.is_file():
-                total_files += 1
-                file_paths.append(item)
-        
-        if total_files == 0:
-            logger.info(f"No files to copy from {src_dir}")
-            return 0
-        
-        logger.info(f"Copying {total_files:,} files from {src_dir} to {dst_dir}")
-        
-        # Initialize ALL variables at the top - this is the key fix
-        copied_files = 0
-        skipped_files = 0
-        total_bytes = 0
-        copied_bytes = 0  # Initialize unconditionally right here
+MAX_BACKUP_FILES = 1_000_000
+
+
+def _copy_backup_directory_with_space_monitoring(src_dir: Path, dst_dir: Path) -> int:
+    dest_validation = parse_backup_destination(dst_dir)
+    if dest_validation.is_invalid:
+        error_messages = "\n".join(str(error) for error in dest_validation.errors)
+        raise ValidationError(f"Invalid backup destination:\n{error_messages}")
+
+    file_paths: list[Path] = []
+    for item in src_dir.rglob("*"):
+        if len(file_paths) > MAX_BACKUP_FILES:
+            raise ValidationError(f"Directory too large (> {MAX_BACKUP_FILES:,} items)")
+        if item.is_file():
+            file_paths.append(item)
+
+    if not file_paths:
+        logger.info(f"No files to copy from {src_dir}")
+        return 0
+
+    logger.info(f"Copying {len(file_paths):,} files from {src_dir} to {dst_dir}")
+    copied_files = 0
+    copied_bytes = 0
+    can_monitor_space = True
+
+    try:
+        shutil.disk_usage(dst_dir)
+    except OSError:
         can_monitor_space = False
-        
-        # Try to enable space monitoring
+        logger.debug("Cannot monitor disk space during copy - proceeding without space checks")
+
+    for file_path in file_paths:
         try:
-            dst_usage = shutil.disk_usage(dst_dir)
-            dst_free = dst_usage.free
-            can_monitor_space = True
-            # Note: copied_bytes is already 0 from initialization above
-        except:
-            logger.debug("Cannot monitor disk space during copy - proceeding without space checks")
-        
-        # Copy each file with space check
-        for file_path in file_paths:
-            # Get file size
-            try:
-                file_size = file_path.stat().st_size
-            except OSError as e:
-                logger.warning(f"Cannot get size for {file_path.name}: {e}")
-                skipped_files += 1
-                continue
-            
-            # Check disk space before each file (if monitoring is enabled)
-            if can_monitor_space:
-                try:
-                    can_copy, space_msg = self.disk_manager.monitor_copy_progress(
-                        dst_dir, copied_bytes, file_size
-                    )
-                    
-                    if not can_copy:
-                        raise ValidationError(
-                            f"Disk space exhausted after copying {copied_bytes/1024**3:.1f} GB.\n"
-                            f"Need {file_size/1024**3:.2f} GB more for {file_path.name}.\n"
-                            f"Backup incomplete - {len(file_paths) - copied_files} files remaining."
-                        )
-                    
-                    if space_msg:
-                        logger.warning(space_msg)
-                except Exception as e:
-                    logger.error(f"Disk space check failed: {e}")
-                    # Continue without further space checks for this file
-                    pass
-            
-            # Copy the file
-            try:
-                bytes_copied = _copy_single_file_secure(file_path, src_dir, dst_dir)
-                copied_files += 1
-                total_bytes += bytes_copied
-                
-                # Update copied bytes for next space check (if monitoring is enabled)
-                if can_monitor_space:
-                    copied_bytes += bytes_copied
-                    
-            except Exception as e:
-                logger.warning(f"Failed to copy {file_path.name}: {e}")
-                skipped_files += 1
-        
-        return copied_files
-    
-    def _compress_backup(self, backup_dir: Path, format: str = "zip") -> Path | None:
-        """
-        Compress backup directory to archive.
-        
-        SUPPORTED FORMATS:
-            - zip: Cross-platform, good compression
-            - tar.gz: Better compression for text files, preserves permissions
-        """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+            file_size = file_path.stat().st_size
+        except OSError as error:
+            logger.warning(f"Cannot get size for {file_path.name}: {error}")
+            continue
+
+        if can_monitor_space:
+            can_copy, space_msg = DiskSpaceManager.monitor_copy_progress(dst_dir, copied_bytes, file_size)
+            if not can_copy:
+                raise ValidationError(
+                    f"Disk space exhausted after copying {copied_bytes/1024**3:.1f} GB.\n"
+                    f"Need {file_size/1024**3:.2f} GB more for {file_path.name}."
+                )
+            if space_msg:
+                logger.warning(space_msg)
+
         try:
-            if format == "zip":
-                archive_path = backup_dir.parent / f"{backup_dir.name}_{timestamp}.zip"
-                if compress_to_zip(backup_dir, archive_path):
-                    logger.info(f"✅ Compressed to ZIP: {archive_path}")
-                    return archive_path
-            elif format == "tar.gz":
-                archive_path = backup_dir.parent / f"{backup_dir.name}_{timestamp}.tar.gz"
-                if compress_to_tar_gz(backup_dir, archive_path):
-                    logger.info(f"✅ Compressed to TAR.GZ: {archive_path}")
-                    return archive_path
-            else:
-                logger.error(f"Unsupported compression format: {format}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Compression failed: {e}")
+            bytes_copied = _copy_single_file_secure(file_path, src_dir, dst_dir)
+        except Exception as error:
+            logger.warning(f"Failed to copy {file_path.name}: {error}")
+            continue
+
+        copied_files += 1
+        copied_bytes += bytes_copied
+
+    return copied_files
+
+
+def _compress_backup_directory(backup_dir: Path, compression_format: str) -> Path | None:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        if compression_format == "zip":
+            archive_path = backup_dir.parent / f"{backup_dir.name}_{timestamp}.zip"
+            if compress_to_zip(backup_dir, archive_path):
+                return archive_path
             return None
-        
+        if compression_format == "tar.gz":
+            archive_path = backup_dir.parent / f"{backup_dir.name}_{timestamp}.tar.gz"
+            if compress_to_tar_gz(backup_dir, archive_path):
+                return archive_path
+            return None
+        raise ValidationError(f"Unsupported compression format: {compression_format}")
+    except Exception as error:
+        logger.error(f"Compression failed: {error}")
         return None
-    
-    def _cleanup_failed_backup(self, backup_path: Path) -> None:
-        """
-        Clean up partially created backup on failure.
-        
-        WHY SEPARATE FUNCTION?
-        - Centralized cleanup logic
-        - Can be extended (e.g., send notifications)
-        - Consistent error handling
-        """
-        if backup_path.exists():
-            try:
-                logger.debug(f"Cleaning up failed backup: {backup_path}")
-                shutil.rmtree(backup_path, ignore_errors=True)
-            except Exception as e:
-                logger.warning(f"Could not clean up backup directory {backup_path}: {e}")
-    
-    def list_backups(self) -> List[Path]:
-        """List available backups in backup directory."""
-        backups = []
-        if self.backup_dir.exists():
-            for item in self.backup_dir.iterdir():
-                if item.name.startswith("backup_") or item.suffix in {".zip", ".tar.gz"}:
-                    backups.append(item)
-        
-        backups.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return backups
-    
-    def restore_backup(self, backup_path: Path, restore_dir: Path) -> bool:
-        """
-        Restore backup to target directory.
-        
-        SUPPORTED BACKUP TYPES:
-            - Directory backups (uncompressed)
-            - ZIP archives (.zip)
-            - TAR.GZ archives (.tar.gz)
-        """
-        logger.info(f"Restoring backup {backup_path} to {restore_dir}")
-        
-        try:
-            # Validate restore directory
-            dest_validation = parse_backup_destination(restore_dir)
-            if dest_validation.is_invalid:
-                error_messages = "\n".join(str(e) for e in dest_validation.errors)
-                raise ValidationError(f"Invalid restore directory:\n{error_messages}")
-            
-            # Check disk space before restoring
-            has_space, error_msg, _ = self.disk_manager.check_space_for_backup(
-                backup_path, restore_dir, estimate_only=True
-            )
-            
-            if not has_space:
-                raise ValidationError(f"Cannot restore backup: {error_msg}")
-            
-            if error_msg:
-                logger.warning(error_msg)
-            
-            # Extract based on backup type
-            if backup_path.suffix == ".zip":
-                return self._extract_zip(backup_path, restore_dir)
-            elif backup_path.suffix == ".tar.gz":
-                return self._extract_tar_gz(backup_path, restore_dir)
-            elif backup_path.is_dir():
-                # Directory backup - copy it
-                return self._copy_directory_with_space_monitoring(backup_path, restore_dir) > 0
-            else:
-                logger.error(f"Unsupported backup format: {backup_path}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Restore failed: {e}")
-            return False
-    
-    def _extract_zip(self, archive_path: Path, extract_dir: Path) -> bool:
-        """Extract ZIP archive."""
-        try:
-            with zipfile.ZipFile(archive_path, "r") as zipf:
-                zipf.extractall(extract_dir)
-            return True
-        except Exception as e:
-            logger.error(f"ZIP extraction failed: {e}")
-            return False
-    
-    def _extract_tar_gz(self, archive_path: Path, extract_dir: Path) -> bool:
-        """Extract TAR.GZ archive."""
-        try:
-            with tarfile.open(archive_path, "r:gz") as tar:
-                tar.extractall(extract_dir)
-            return True
-        except Exception as e:
-            logger.error(f"TAR.GZ extraction failed: {e}")
-            return False
 
-# =============================================================================
-# FILE ORGANIZATION ORCHESTRATORS
-# =============================================================================
 
-class FileOrganizationOrchestrator:
-    """
-    Organizes files into categorized folders.
-    
-    FEATURES:
-        - File categorization by extension
-        - Conflict resolution strategies
-        - Dry-run mode for testing
-        - Progress tracking
-        - Comprehensive error handling
-    """
-    
-    @with_logging
-    def organize_files(
-        self,
-        source_dir: Path,
-        *,
-        conflict_strategy: ConflictStrategy = ConflictStrategy.SKIP,
-        dry_run: bool = False,
-        recursive: bool = False,
-        max_files: int = MAX_FILES
-    ) -> OrganizationResult:
-        """
-        Organize files with dry-run support.
-        
-        DESIGN:
-            - Validation-first approach
-            - Isolated error handling per file
-            - Progress tracking with tqdm
-            - Dry-run mode for safe testing
-        """
-        # Validate the source directory
-        source_validation = parse_source_directory_secure(source_dir, max_files)
-        if source_validation.is_invalid:
-            error_messages = "\n".join([str(e) for e in source_validation.errors])
-            raise ValidationError(f"Invalid source directory:\n{error_messages}")
-        
-        validated_dir = source_validation.value
-        if validated_dir is None:
-            raise ValidationError("Parsed source directory returned None")
-        
-        result = OrganizationResult()
-        created_categories: Set[str] = set()
-        
-        # Get all files to organize
-        all_files = list(self._get_file_iterator(validated_dir, recursive))
-        all_files = all_files[:max_files]
-        
-        if not all_files:
-            logger.info("No files to organize")
-            return result
-        
-        logger.info(f"Found {len(all_files)} files to organize")
-        
-        # Process each file
-        with with_dry_run(dry_run):
-            with tqdm(
-                total=len(all_files), # total items. 100%
-                desc="🏢 Organizing", # Text before bar
-                unit="files",         # Unit names
-                colour="blue",        # Bar colour
-                bar_format="{l_bar}{bar:40}{r_bar}", # How bar looks
-                ncols=80,   # Width in characters
-                mininterval=0.1,  # Minimum update interval(seconds)
-            ) as pbar:
-                for file_path in all_files:
-                    self._process_single_file(
-                        file_path,
-                        validated_dir,
-                        conflict_strategy,
-                        created_categories,
-                        result,
-                        dry_run
-                    )
-                    pbar.update(1)
-        
-        self._log_results(result, dry_run)
-        return result
-    
-    def _get_file_iterator(self, source_dir: Path, recursive: bool) -> Iterator[Path]:
-        """Get iterator for files based on recursive flag."""
-        if recursive:
-            return (f for f in source_dir.rglob("*") if f.is_file())
-        else:
-            return (f for f in source_dir.iterdir() if f.is_file())
-    
-    def _process_single_file(
-        self, 
-        file_path: Path, 
-        source_dir: Path, 
-        strategy: ConflictStrategy, 
-        created_categories: Set[str], 
-        result: OrganizationResult, 
-        dry_run: bool
-    ) -> None:
-        """Process a single file with error isolation."""
-        try:
-            file_info = gather_file_metadata(file_path)
-            result.discovered_categories.add(file_info.category)
-            
-            category_dir = source_dir / file_info.category
-            if file_info.category not in created_categories and not category_dir.exists():
-                if not dry_run:
-                    category_dir.mkdir(exist_ok=True)
-                    created_categories.add(file_info.category)
-                    result.created_categories_count += 1
-            
-            # Skip if already in correct category
-            if file_path.parent == category_dir:
-                result.skipped += 1
-                return
-            
-            target_path = category_dir / file_info.name
-            if target_path.exists():
-                target_path = self._resolve_conflict(target_path, strategy)
-                if target_path is None:
-                    result.conflicts += 1
-                    return
-            
-            if not dry_run:
-                shutil.move(str(file_path), str(target_path))
-                result.operations.append((file_path, target_path))
-            
-            result.organized += 1
-            
-        except ValidationError as e:
-            logger.error(f"Validation failed for {file_path.name}: {e}")
-            result.errors += 1
-        except Exception as e:
-            logger.error(f"Failed to process {file_path.name}: {e}")
-            result.errors += 1
-    
-    def _resolve_conflict(self, target_path: Path, strategy: ConflictStrategy) -> Path | None:
-        """Resolve file name conflict based on strategy."""
-        if strategy == ConflictStrategy.SKIP:
-            return None
-        elif strategy == ConflictStrategy.RENAME:
-            return generate_unique_filename(target_path)
-        elif strategy == ConflictStrategy.OVERWRITE:
-            target_path.unlink(missing_ok=True)
-            return target_path
-        elif strategy == ConflictStrategy.DELETE:
-            return None  # Source will be deleted later
-    
-    def _log_results(self, result: OrganizationResult, dry_run: bool) -> None:
-        """Log organization results."""
-        mode = "DRY RUN" if dry_run else "COMPLETE"
-        logger.success(
-            f"{mode}: {result.organized} organized, "
-            f"{result.skipped} skipped, "
-            f"{result.conflicts} conflicts, "
-            f"{result.errors} errors"
+def _cleanup_failed_backup(backup_path: Path) -> None:
+    if not backup_path.exists():
+        return
+    try:
+        logger.debug(f"Cleaning up failed backup: {backup_path}")
+        shutil.rmtree(backup_path, ignore_errors=True)
+    except Exception as error:
+        logger.warning(f"Could not clean up backup directory {backup_path}: {error}")
+
+
+def _extract_zip_archive(archive_path: Path, extract_dir: Path) -> bool:
+    try:
+        with zipfile.ZipFile(archive_path, "r") as zip_file:
+            zip_file.extractall(extract_dir)
+        return True
+    except Exception as error:
+        logger.error(f"ZIP extraction failed: {error}")
+        return False
+
+
+def _extract_tar_gz_archive(archive_path: Path, extract_dir: Path) -> bool:
+    try:
+        with tarfile.open(archive_path, "r:gz") as tar_file:
+            tar_file.extractall(extract_dir)
+        return True
+    except Exception as error:
+        logger.error(f"TAR.GZ extraction failed: {error}")
+        return False
+
+
+@with_logging
+@with_retry(max_attempts=APP_CONFIG.backup_retry_attempts)
+def create_backup(input_data: BackupCommandInput) -> Path | None:
+    logger.info(f"Starting backup of {input_data.source_dir}")
+    source_validation = parse_backup_source(input_data.source_dir)
+    if source_validation.is_invalid:
+        error_messages = "\n".join(str(error) for error in source_validation.errors)
+        raise ValidationError(f"Invalid backup source:\n{error_messages}")
+
+    validated_source = _get_validated_value(source_validation, "Backup source")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    backup_path = input_data.backup_dir / f"backup_{validated_source.name}_{timestamp}"
+
+    try:
+        has_space, error_msg, estimated_size = DiskSpaceManager.check_space_for_backup(
+            validated_source,
+            input_data.backup_dir,
+            estimate_only=True,
         )
-        
-        if result.discovered_categories:
-            categories = ", ".join(sorted(result.discovered_categories))
-            logger.info(f"Categories: {categories}")
+        if not has_space:
+            raise ValidationError(f"Cannot create backup: {error_msg}")
+        if error_msg:
+            logger.warning(error_msg)
+        if estimated_size:
+            logger.info(f"Estimated backup size: {estimated_size/1024**3:.1f} GB")
+
+        backup_path.mkdir(parents=True, exist_ok=True)
+        files_copied = _copy_backup_directory_with_space_monitoring(validated_source, backup_path)
+        if files_copied == 0:
+            backup_path.rmdir()
+            return None
+
+        if input_data.compress:
+            archive_path = _compress_backup_directory(backup_path, input_data.compression_format)
+            if archive_path is not None:
+                shutil.rmtree(backup_path, ignore_errors=True)
+                return archive_path
+
+        return backup_path
+    except Exception as error:
+        logger.error(f"Backup failed: {error}")
+        _cleanup_failed_backup(backup_path)
+        return None
 
 
-class EfficientFileOrganizationOrchestrator:
-    """
-    Efficient orchestrator with single-pass and batch conflict resolution.
-    
-    OPTIMIZATIONS:
-        - Single pass through files
-        - Batch conflict resolution at the end
-        - No dry-run needed (single pass only)
-        - Interactive conflict resolution prompts
-    """
-    
-    @with_logging
-    def organize_files(
-        self,
-        source_dir: Path,
-        *,
-        default_strategy: ConflictStrategy = ConflictStrategy.SKIP,
-        recursive: bool = False,
-        max_files: int = MAX_FILES
-    ) -> OrganizationResult:
-        """Single-pass organization with batch conflict resolution."""
-        # Validate source directory
-        source_validation = parse_source_directory_secure(source_dir, max_files)
-        if source_validation.is_invalid:
-            error_messages = "\n".join([str(e) for e in source_validation.errors])
-            raise ValidationError(f"Invalid source directory:\n{error_messages}")
-        
-        validated_dir = source_validation.value
-        if validated_dir is None:
-            raise ValidationError("Parsed source directory returned None")
-        
-        result = OrganizationResult()
-        created_categories: Set[str] = set()
-        
-        # Track conflicts for batch resolution
-        conflicts: List[Tuple[Path, Path]] = []  # (source_file, target_path)
-        conflict_files: Set[Path] = set()  # Files that have conflicts
-        
-        # First pass: Organize all non-conflicting files, track conflicts
-        all_files = list(self._get_file_iterator(validated_dir, recursive))
-        all_files = all_files[:max_files]
-        
-        if not all_files:
-            logger.info("No files to organize")
-            return result
-        
-        logger.info(f"Found {len(all_files)} files to organize")
-        
+def get_backups(backup_dir: Path) -> List[Path]:
+    backups = []
+    if backup_dir.exists():
+        for item in backup_dir.iterdir():
+            if item.name.startswith("backup_") or item.suffix in {".zip", ".tar.gz"}:
+                backups.append(item)
+
+    backups.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return backups
+
+
+def restore_backup(backup_path: Path, restore_dir: Path, backup_dir: Path) -> bool:
+    logger.info(f"Restoring backup {backup_path} to {restore_dir}")
+    del backup_dir
+
+    try:
+        dest_validation = parse_backup_destination(restore_dir)
+        if dest_validation.is_invalid:
+            error_messages = "\n".join(str(error) for error in dest_validation.errors)
+            raise ValidationError(f"Invalid restore directory:\n{error_messages}")
+
+        has_space, error_msg, _ = DiskSpaceManager.check_space_for_backup(
+            backup_path,
+            restore_dir,
+            estimate_only=True,
+        )
+        if not has_space:
+            raise ValidationError(f"Cannot restore backup: {error_msg}")
+        if error_msg:
+            logger.warning(error_msg)
+
+        if backup_path.suffix == ".zip":
+            return _extract_zip_archive(backup_path, restore_dir)
+        if backup_path.suffix == ".tar.gz":
+            return _extract_tar_gz_archive(backup_path, restore_dir)
+        if backup_path.is_dir():
+            return _copy_backup_directory_with_space_monitoring(backup_path, restore_dir) > 0
+
+        logger.error(f"Unsupported backup format: {backup_path}")
+        return False
+    except Exception as error:
+        logger.error(f"Restore failed: {error}")
+        return False
+
+# =============================================================================
+# FILE ORGANIZATION APPLICATION
+# =============================================================================
+
+def _save_organize_state(state: OrganizeOperationState) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "source_dir": state.source_dir,
+        "conflict_strategy": state.conflict_strategy,
+        "recursive": state.recursive,
+        "max_files": state.max_files,
+        "started_at": state.started_at,
+        "completed_paths": state.completed_paths,
+    }
+    temp_path = ORGANIZE_STATE_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.replace(ORGANIZE_STATE_PATH)
+
+
+def _load_organize_state() -> OrganizeOperationState | None:
+    if not ORGANIZE_STATE_PATH.exists():
+        return None
+
+    data = json.loads(ORGANIZE_STATE_PATH.read_text(encoding="utf-8"))
+    return OrganizeOperationState(
+        source_dir=str(data["source_dir"]),
+        conflict_strategy=str(data["conflict_strategy"]),
+        recursive=bool(data["recursive"]),
+        max_files=int(data["max_files"]),
+        started_at=str(data["started_at"]),
+        completed_paths=[str(path) for path in data.get("completed_paths", [])],
+    )
+
+
+def _clear_organize_state() -> None:
+    ORGANIZE_STATE_PATH.unlink(missing_ok=True)
+
+
+def _get_file_iterator(source_dir: Path, recursive: bool) -> Iterator[Path]:
+    if recursive:
+        return (item for item in source_dir.rglob("*") if item.is_file())
+    return (item for item in source_dir.iterdir() if item.is_file())
+
+
+def _collect_files_for_organization(source_dir: Path, recursive: bool, max_files: int) -> list[Path]:
+    return list(_get_file_iterator(source_dir, recursive))[:max_files]
+
+
+def _resolve_target_path(target_path: Path, strategy: ConflictStrategy) -> Path | None:
+    if strategy is ConflictStrategy.SKIP:
+        return None
+    if strategy is ConflictStrategy.RENAME:
+        return generate_unique_filename(target_path)
+    if strategy is ConflictStrategy.OVERWRITE:
+        target_path.unlink(missing_ok=True)
+        return target_path
+    return target_path
+
+
+def _prepare_resume_state(
+    validated_source: Path,
+    input_data: OrganizeFilesInput,
+) -> tuple[OrganizeOperationState | None, set[str]]:
+    if input_data.dry_run:
+        return None, set()
+
+    current_source = str(validated_source.resolve())
+    existing_state = _load_organize_state()
+    if existing_state is None:
+        state = OrganizeOperationState(
+            source_dir=current_source,
+            conflict_strategy=input_data.conflict_strategy.value,
+            recursive=input_data.recursive,
+            max_files=input_data.max_files,
+            started_at=datetime.now().isoformat(),
+        )
+        _save_organize_state(state)
+        return state, set()
+
+    if (
+        existing_state.source_dir != current_source
+        or existing_state.conflict_strategy != input_data.conflict_strategy.value
+        or existing_state.recursive != input_data.recursive
+        or existing_state.max_files != input_data.max_files
+    ):
+        raise ValidationError(
+            "Existing crash-recovery state does not match this organize run. "
+            "Clear or resume the previous run first."
+        )
+
+    typer.echo(
+        f"Resuming previous organize run from {existing_state.started_at}. "
+        f"Already processed: {len(existing_state.completed_paths)} files."
+    )
+    return existing_state, set(existing_state.completed_paths)
+
+
+def _mark_file_completed(
+    state: OrganizeOperationState | None,
+    completed_paths: set[str],
+    relative_path: str,
+) -> None:
+    if state is None or relative_path in completed_paths:
+        return
+    completed_paths.add(relative_path)
+    state.completed_paths.append(relative_path)
+    _save_organize_state(state)
+
+
+def _log_organize_results(result: OrganizationResult, dry_run: bool) -> None:
+    mode = "DRY RUN" if dry_run else "COMPLETE"
+    logger.success(
+        f"{mode}: {result.organized} organized, "
+        f"{result.skipped} skipped, "
+        f"{result.conflicts} conflicts, "
+        f"{result.errors} errors"
+    )
+    if result.discovered_categories:
+        logger.info(f"Categories: {', '.join(sorted(result.discovered_categories))}")
+
+
+def _organize_single_file(
+    file_path: Path,
+    source_dir: Path,
+    strategy: ConflictStrategy,
+    created_categories: set[str],
+    result: OrganizationResult,
+    dry_run: bool,
+) -> None:
+    file_info = gather_file_metadata(file_path)
+    result.discovered_categories.add(file_info.category)
+
+    category_dir = source_dir / file_info.category
+    if file_info.category not in created_categories and not category_dir.exists():
+        if not dry_run:
+            category_dir.mkdir(exist_ok=True)
+        created_categories.add(file_info.category)
+        result.created_categories_count += 1
+
+    if file_path.parent == category_dir:
+        result.skipped += 1
+        return
+
+    target_path = category_dir / file_info.name
+    if target_path.exists():
+        if strategy is ConflictStrategy.DELETE:
+            if not dry_run:
+                file_path.unlink(missing_ok=True)
+            result.organized += 1
+            return
+
+        resolved_target = _resolve_target_path(target_path, strategy)
+        if resolved_target is None:
+            result.conflicts += 1
+            return
+        target_path = resolved_target
+
+    if not dry_run:
+        shutil.move(str(file_path), str(target_path))
+        result.operations.append((file_path, target_path))
+
+    result.organized += 1
+
+
+@with_logging
+def organize_files(input_data: OrganizeFilesInput) -> tuple[OrganizationResult, Path | None]:
+    validated_source = _validate_source_directory(input_data.source_dir, input_data.max_files)
+    state, completed_paths = _prepare_resume_state(validated_source, input_data)
+    result = OrganizationResult()
+    created_categories: set[str] = set()
+    all_files = _collect_files_for_organization(validated_source, input_data.recursive, input_data.max_files)
+
+    if not all_files:
+        logger.info("No files to organize")
+        _clear_organize_state()
+        return result, None
+
+    pending_files = [
+        file_path
+        for file_path in all_files
+        if input_data.dry_run
+        or str(file_path.relative_to(validated_source)) not in completed_paths
+    ]
+
+    logger.info(f"Found {len(all_files)} files to organize")
+    if state is not None and completed_paths:
+        logger.info(f"Resuming with {len(pending_files)} files remaining")
+
+    try:
         with tqdm(
-            total=len(all_files),
+            total=len(pending_files),
             desc="🏢 Organizing",
             unit="files",
             colour="blue",
             bar_format="{l_bar}{bar:40}{r_bar}",
             ncols=80,
             mininterval=0.1,
-        ) as pbar:
-            for file_path in all_files:
+        ) as progress:
+            for file_path in pending_files:
+                relative_path = str(file_path.relative_to(validated_source))
                 try:
-                    file_info = gather_file_metadata(file_path)
-                    result.discovered_categories.add(file_info.category)
-                    
-                    category_dir = validated_dir / file_info.category
-                    if file_info.category not in created_categories and not category_dir.exists():
-                        category_dir.mkdir(exist_ok=True)
-                        created_categories.add(file_info.category)
-                        result.created_categories_count += 1
-                    
-                    if file_path.parent == category_dir:
-                        result.skipped += 1
-                        pbar.update(1)
-                        continue
-                    
-                    target_path = category_dir / file_info.name
-                    
-                    # Check for conflict
-                    if target_path.exists():
-                        # Track conflict for batch resolution
-                        conflicts.append((file_path, target_path))
-                        conflict_files.add(file_path)
-                        result.conflicts += 1
-                    else:
-                        # No conflict - move immediately
-                        shutil.move(str(file_path), str(target_path))
-                        result.operations.append((file_path, target_path))
-                        result.organized += 1
-                        
-                except ValidationError as e:
-                    logger.error(f"Validation failed for {file_path.name}: {e}")
+                    _organize_single_file(
+                        file_path=file_path,
+                        source_dir=validated_source,
+                        strategy=input_data.conflict_strategy,
+                        created_categories=created_categories,
+                        result=result,
+                        dry_run=input_data.dry_run,
+                    )
+                except ValidationError as error:
+                    logger.error(f"Validation failed for {file_path.name}: {error}")
                     result.errors += 1
-                except Exception as e:
-                    logger.error(f"Failed to process {file_path.name}: {e}")
+                except Exception as error:
+                    logger.error(f"Failed to process {file_path.name}: {error}")
                     result.errors += 1
-                
-                pbar.update(1)
-        
-        # Batch conflict resolution at the END (if any conflicts)
-        if conflicts:
-            strategy = self._prompt_for_batch_conflict_strategy(len(conflicts), default_strategy)
-            
-            if strategy is not None and strategy != ConflictStrategy.SKIP:
-                resolved_count = self._apply_batch_strategy(
-                    conflicts, conflict_files, strategy, result
-                )
-                typer.echo(f"✅ Resolved {resolved_count} conflicts with '{strategy.value}' strategy.")
-        
-        logger.success(
-            f"COMPLETE: {result.organized} organized, "
-            f"{result.skipped} skipped, "
-            f"{result.conflicts} conflicts, "
-            f"{result.errors} errors"
-        )
-        
-        if result.discovered_categories:
-            categories = ", ".join(sorted(result.discovered_categories))
-            logger.info(f"Categories: {categories}")
-            
-        return result
-    
-    def _get_file_iterator(self, source_dir: Path, recursive: bool) -> Iterator[Path]:
-        """Get iterator for files based on recursive flag."""
-        if recursive:
-            return (f for f in source_dir.rglob("*") if f.is_file())
-        else:
-            return (f for f in source_dir.iterdir() if f.is_file())
-    
-    def _prompt_for_batch_conflict_strategy(
-        self, 
-        conflict_count: int,
-        current_strategy: ConflictStrategy
-    ) -> ConflictStrategy | None:
-        """Prompt user for how to handle ALL conflicts at once."""
-        if conflict_count == 0:
-            return None
-            
-        typer.echo(f"\n{'!'*60}")
-        typer.echo(f"⚠️  BATCH CONFLICT RESOLUTION")
-        typer.echo(f"{'!'*60}")
-        typer.echo(f"Found {conflict_count} file conflicts during organization.")
-        
-        typer.echo(f"\nHow would you like to handle these {conflict_count} conflicts?")
-        typer.echo(f"1. Skip all (keep current '{current_strategy.value}' strategy)")
-        typer.echo("2. Rename all conflicted files (file.txt → file_1.txt)")
-        typer.echo("3. Overwrite all (DANGEROUS - deletes target files)")
-        typer.echo("4. Delete all conflicted source files (DANGEROUS)")
-        typer.echo("5. Cancel - leave conflicted files as-is")
-        
-        while True:
-            choice = typer.prompt("\nChoose option (1-5)", default="1", show_choices=False).strip()
-            
-            if choice == "1":
-                return current_strategy
-            elif choice == "2":
-                return ConflictStrategy.RENAME
-            elif choice == "3":
-                typer.echo("\n" + "!"*50)
-                typer.echo("⚠️  CRITICAL WARNING: BATCH OVERWRITE")
-                typer.echo("!"*50)
-                typer.echo(f"This will PERMANENTLY DELETE {conflict_count} files!")
-                if typer.confirm("\nAre you ABSOLUTELY sure?"):
-                    return ConflictStrategy.OVERWRITE
-                continue
-            elif choice == "4":
-                typer.echo("\n" + "!"*50)
-                typer.echo("⚠️  CRITICAL WARNING: BATCH DELETE")
-                typer.echo("!"*50)
-                typer.echo(f"This will PERMANENTLY DELETE {conflict_count} source files!")
-                if typer.confirm("\nAre you ABSOLUTELY sure?"):
-                    return ConflictStrategy.DELETE
-                continue
-            elif choice == "5":
-                return None  # User cancelled conflict resolution
-            else:
-                typer.echo("Invalid choice. Please enter 1-5.")
-    
-    def _apply_batch_strategy(
-        self,
-        conflicts: List[Tuple[Path, Path]],
-        conflict_files: Set[Path],
-        strategy: ConflictStrategy,
-        result: OrganizationResult
-    ) -> int:
-        """Apply chosen strategy to all conflicts."""
-        resolved_count = 0
-        
-        for file_path, target_path in conflicts:
-            try:
-                if strategy == ConflictStrategy.RENAME:
-                    new_target = generate_unique_filename(target_path)
-                    shutil.move(str(file_path), str(new_target))
-                    result.operations.append((file_path, new_target))
-                    result.organized += 1
-                    result.conflicts -= 1
-                    resolved_count += 1
-                elif strategy == ConflictStrategy.OVERWRITE:
-                    target_path.unlink(missing_ok=True)
-                    shutil.move(str(file_path), str(target_path))
-                    result.operations.append((file_path, target_path))
-                    result.organized += 1
-                    result.conflicts -= 1
-                    resolved_count += 1
-                elif strategy == ConflictStrategy.DELETE:
-                    file_path.unlink(missing_ok=True)
-                    result.conflicts -= 1
-                    resolved_count += 1
-                # SKIP is handled by doing nothing
-            except Exception as e:
-                logger.error(f"Failed to resolve conflict for {file_path.name}: {e}")
-                result.errors += 1
-        
-        return resolved_count
+
+                _mark_file_completed(state, completed_paths, relative_path)
+                progress.update(1)
+    except KeyboardInterrupt:
+        logger.warning("Organization interrupted. Progress was saved for resume.")
+        raise
+    except Exception:
+        logger.exception("Organization crashed. Progress was saved for resume.")
+        raise
+    else:
+        _clear_organize_state()
+
+    _log_organize_results(result, input_data.dry_run)
+    return result, None
 
 # =============================================================================
 # CLI INTERFACE - User-facing commands
@@ -2048,13 +1784,13 @@ app = typer.Typer(
 )
 
 
-def _setup_environment() -> None:
-    """Setup logging and required directories."""
-    setup_logging()
-    ensure_directories_exist()
+@app.callback()
+def init() -> None:
+    log_file = _setup_env()
+    _setup_logger(log_file)
 
 
-def _handle_validation_result[T](validation: Validated[T], context: str = "") -> T:
+def _get_validated_value[T](validation: Validated[T], context: str = "") -> T:
     """
     Takes a Validated[T] and either returns the value (guaranteed non-None) 
     or exits with an error if invalid.
@@ -2072,7 +1808,7 @@ def _handle_validation_result[T](validation: Validated[T], context: str = "") ->
     return value
 
 
-def prompt_for_conflict_strategy() -> ConflictStrategy:
+def _prompt_for_conflict_strategy() -> ConflictStrategy:
     """Interactive prompt for conflict resolution strategy."""
     typer.echo("\n🔀 Conflict Resolution Strategy")
     typer.echo("─────────────────────────────")
@@ -2105,6 +1841,96 @@ def prompt_for_conflict_strategy() -> ConflictStrategy:
             raise typer.Abort("Operation cancelled by user.")
         else:
             typer.echo("Invalid choice. Please enter 1-5.")
+
+
+def _validate_source_directory(source_dir: Path, max_files: int) -> Path:
+    source_validation = parse_source_directory_secure(source_dir, max_files)
+    return _get_validated_value(source_validation, "Source directory")
+
+
+def _resolve_conflict_strategy(strategy: str, interactive: bool) -> ConflictStrategy:
+    if interactive:
+        return _prompt_for_conflict_strategy()
+    strategy_validation = parse_conflict_strategy(strategy)
+    return _get_validated_value(strategy_validation, "Conflict strategy")
+
+
+def _confirm_destructive_organize_strategy(
+    conflict_strategy: ConflictStrategy,
+    dry_run: bool,
+    backup_enabled: bool,
+) -> bool:
+    if dry_run:
+        return backup_enabled
+
+    if conflict_strategy == ConflictStrategy.DELETE:
+        typer.echo("\n" + "!" * 40)
+        typer.echo("⚠️  DELETE STRATEGY SELECTED")
+        typer.echo("!" * 40)
+        typer.echo("Conflicted source files will be PERMANENTLY DELETED!")
+
+        if not typer.confirm("\nAre you sure you want to delete files?"):
+            raise typer.Abort("Delete strategy cancelled by user.")
+
+        if not backup_enabled:
+            typer.echo("\n💡 STRONGLY RECOMMENDED: Backup before deleting files")
+            if typer.confirm("Create backup before proceeding?"):
+                return True
+        return backup_enabled
+
+    if conflict_strategy == ConflictStrategy.OVERWRITE:
+        typer.echo("\n" + "!" * 50)
+        typer.echo("⚠️  WARNING: OVERWRITE STRATEGY SELECTED")
+        typer.echo("!" * 50)
+        typer.echo("This will PERMANENTLY DELETE duplicate files!")
+
+        if not typer.confirm("\nAre you ABSOLUTELY sure you want to continue?"):
+            raise typer.Abort("Overwrite strategy cancelled by user.")
+
+        if not backup_enabled:
+            typer.echo("\n💡 RECOMMENDATION: Consider creating a backup")
+            if typer.confirm("Create backup before proceeding?"):
+                return True
+
+    return backup_enabled
+
+
+def _confirm_organize_execution(input_data: OrganizeFilesInput) -> None:
+    if input_data.dry_run:
+        return
+
+    typer.echo("\n" + "=" * 50)
+    typer.echo("🚀 EXECUTION SUMMARY")
+    typer.echo("=" * 50)
+    typer.echo(f"Source: {input_data.source_dir}")
+    typer.echo(f"Strategy: {input_data.conflict_strategy.value}")
+    typer.echo(f"Mode: {'Recursive' if input_data.recursive else 'Current folder only'}")
+    typer.echo(f"Max files: {input_data.max_files}")
+    typer.echo(f"Backup: {'✅ Yes' if input_data.backup else '❌ No'}")
+
+    if not typer.confirm("\nProceed with file organization?"):
+        raise typer.Abort("Operation cancelled by user.")
+
+
+def analyze_directory(source_dir: Path, max_files: int) -> DirectoryAnalysis:
+    validated_source = _validate_source_directory(source_dir, max_files)
+    category_counts: dict[str, int] = {}
+    file_count = 0
+
+    for item in validated_source.iterdir():
+        if item.is_file():
+            file_count += 1
+            try:
+                category = extract_file_category(item)
+            except ValidationError:
+                continue
+            category_counts[category] = category_counts.get(category, 0) + 1
+
+    return DirectoryAnalysis(
+        source_dir=validated_source,
+        file_count=file_count,
+        category_counts=category_counts,
+    )
 
 
 @app.command()
@@ -2146,64 +1972,33 @@ def organize(
     Default: Dry run (preview changes)
     Use --execute to run with efficient single-pass algorithm.
     """
-    _setup_environment()
-    
     try:
-        # ========== SETUP & VALIDATION ==========
         if interactive:
-            typer.echo("\n" + "="*50)
+            typer.echo("\n" + "=" * 50)
             typer.echo("🏢 FILE ORGANIZER - Interactive Mode")
-            typer.echo("="*50)
-            try:
-                conflict_strategy = prompt_for_conflict_strategy()
-            except typer.Abort:
-                typer.echo("Operation cancelled.")
-                sys.exit(0)
-        else:
-            strategy_validation = parse_conflict_strategy(strategy)
-            conflict_strategy = _handle_validation_result(strategy_validation, "Conflict strategy")
-        
-        # Validate source directory
-        source_validation = parse_source_directory_secure(source_dir, max_files)
-        validated_source = _handle_validation_result(source_validation, "Source directory")
-        
-        # ========== WARNINGS FOR DANGEROUS STRATEGIES ==========
-        if conflict_strategy == ConflictStrategy.DELETE and not dry_run:
-            typer.echo("\n" + "!"*40)
-            typer.echo("⚠️  DELETE STRATEGY SELECTED")
-            typer.echo("!"*40)
-            typer.echo("Conflicted source files will be PERMANENTLY DELETED!")
-            
-            if not typer.confirm("\nAre you sure you want to delete files?"):
-                raise typer.Abort("Delete strategy cancelled by user.")
-            
-            if not backup:
-                typer.echo("\n💡 STRONGLY RECOMMENDED: Backup before deleting files")
-                if typer.confirm("Create backup before proceeding?"):
-                    backup = True
-        
-        if conflict_strategy == ConflictStrategy.OVERWRITE and not dry_run:
-            typer.echo("\n" + "!"*50)
-            typer.echo("⚠️  WARNING: OVERWRITE STRATEGY SELECTED")
-            typer.echo("!"*50)
-            typer.echo("This will PERMANENTLY DELETE duplicate files!")
-            
-            if not typer.confirm("\nAre you ABSOLUTELY sure you want to continue?"):
-                raise typer.Abort("Overwrite strategy cancelled by user.")
-            
-            if not backup:
-                typer.echo("\n💡 RECOMMENDATION: Consider creating a backup")
-                if typer.confirm("Create backup before proceeding?"):
-                    backup = True
-        
-        # ========== BACKUP CREATION ==========
-        backup_path = None
-        if backup and not dry_run:
+            typer.echo("=" * 50)
+
+        conflict_strategy = _resolve_conflict_strategy(strategy, interactive)
+        backup = _confirm_destructive_organize_strategy(conflict_strategy, dry_run, backup)
+        organize_input = OrganizeFilesInput(
+            source_dir=source_dir,
+            dry_run=dry_run,
+            conflict_strategy=conflict_strategy,
+            recursive=recursive,
+            max_files=max_files,
+            backup=backup,
+        )
+
+        backup_path: Path | None = None
+        if organize_input.backup and not organize_input.dry_run:
             typer.echo("\n💾 Creating backup...")
-            backup_orchestrator = BackupOrchestrator()
-            backup_path = backup_orchestrator.create_backup(
-                validated_source, 
-                compress=True
+            backup_path = create_backup(
+                BackupCommandInput(
+                    source_dir=organize_input.source_dir,
+                    backup_dir=BACKUP_DIR,
+                    compress=True,
+                    compression_format="zip",
+                )
             )
             if backup_path:
                 typer.echo(f"✅ Backup created: {backup_path}")
@@ -2211,59 +2006,25 @@ def organize(
                 typer.echo("⚠️  Backup creation failed")
                 if not typer.confirm("Continue without backup?"):
                     sys.exit(1)
-        
-        # ========== EXECUTION CONFIRMATION ==========
-        if not dry_run:
-            # Show execution summary
-            typer.echo("\n" + "="*50)
-            typer.echo("🚀 EXECUTION SUMMARY")
-            typer.echo("="*50)
-            typer.echo(f"Source: {validated_source}")
-            typer.echo(f"Strategy: {conflict_strategy.value}")
-            typer.echo(f"Mode: {'Recursive' if recursive else 'Current folder only'}")
-            typer.echo(f"Max files: {max_files}")
-            typer.echo(f"Backup: {'✅ Yes' if backup else '❌ No'}")
-            
-            if not typer.confirm("\nProceed with file organization?"):
-                raise typer.Abort("Operation cancelled by user.")
-        
-        # ========== EXECUTION ==========
-        if dry_run:
-            # ===== DRY RUN MODE =====
+
+        _confirm_organize_execution(organize_input)
+
+        result, _ = organize_files(organize_input)
+
+        if organize_input.dry_run:
             typer.echo("\n🧪 DRY RUN MODE")
             typer.echo("No files will be modified.")
-            organizer = FileOrganizationOrchestrator()
-            result = organizer.organize_files(
-                source_dir=validated_source,
-                conflict_strategy=conflict_strategy,
-                dry_run=True,
-                recursive=recursive,
-                max_files=max_files
-            )
-            
             completion_msg = "🧪 DRY RUN COMPLETE"
             completion_details = "No changes were made to your files."
-            
         else:
-            # ===== EFFICIENT EXECUTION =====
-            typer.echo("\n" + "="*50)
+            typer.echo("\n" + "=" * 50)
             typer.echo("🚀 EXECUTING FILE ORGANIZATION")
-            typer.echo("="*50)
+            typer.echo("=" * 50)
             typer.echo("• Single-pass efficient mode")
             typer.echo("• Batch conflict resolution")
-            
-            organizer = EfficientFileOrganizationOrchestrator()
-            result = organizer.organize_files(
-                source_dir=validated_source,
-                default_strategy=conflict_strategy,
-                recursive=recursive,
-                max_files=max_files
-            )
-            
             completion_msg = "✅ ORGANIZATION COMPLETE"
             completion_details = "Files have been organized successfully."
         
-        # ========== RESULTS DISPLAY ==========
         typer.echo(f"\n📊 RESULTS:")
         typer.echo(f"  Organized: {result.organized}")
         typer.echo(f"  Skipped: {result.skipped}")
@@ -2274,13 +2035,11 @@ def organize(
             categories = ", ".join(sorted(result.discovered_categories))
             typer.echo(f"  Categories: {categories}")
         
-        # Success message for actual execution
         if result.organized > 0 and not dry_run:
             typer.echo(f"\n✅ Successfully organized {result.organized} files!")
             if backup_path:
                 typer.echo(f"💾 Backup available: {backup_path}")
         
-        # Conflict explanation
         if result.conflicts > 0:
             typer.echo(f"\nℹ️  {result.conflicts} conflicts occurred.")
             if conflict_strategy == ConflictStrategy.SKIP:
@@ -2292,7 +2051,6 @@ def organize(
             elif conflict_strategy == ConflictStrategy.DELETE:
                 typer.echo("   (Conflicted source files were deleted)")
         
-        # Final completion message
         typer.echo(f"\n{completion_msg}")
         typer.echo(completion_details)
             
@@ -2351,14 +2109,9 @@ def backup(
         - Secure validation of all paths
         - Backup listing and restoration
     """
-    _setup_environment()
-    
     try:
-        backup_orchestrator = BackupOrchestrator(backup_dir)
-        
-        # List backups if requested
         if list_backups:
-            backups = backup_orchestrator.list_backups()
+            backups = get_backups(backup_dir)
             if not backups:
                 typer.echo("No backups found.")
                 return
@@ -2371,7 +2124,6 @@ def backup(
                 typer.echo(f"  • {backup_path.name} ({size_str}, {modified:%Y-%m-%d %H:%M})")
             return
         
-        # Restore backup if requested
         if restore:
             if not restore.exists():
                 typer.echo(f"❌ Backup not found: {restore}")
@@ -2383,7 +2135,7 @@ def backup(
             if not typer.confirm("\nProceed with restore?"):
                 raise typer.Abort("Restore cancelled by user.")
             
-            success = backup_orchestrator.restore_backup(restore, restore_to)
+            success = restore_backup(restore, restore_to, backup_dir)
             if success:
                 typer.echo(f"✅ Backup restored successfully to {restore_to}")
             else:
@@ -2391,7 +2143,6 @@ def backup(
                 sys.exit(1)
             return
         
-        # Create backup
         typer.echo(f"\n💾 Creating backup of: {source_dir}")
         typer.echo(f"   To: {backup_dir}")
         typer.echo(f"   Compression: {compress} ({compression_format})")
@@ -2399,10 +2150,13 @@ def backup(
         if not typer.confirm("\nProceed with backup?"):
             raise typer.Abort("Backup cancelled by user.")
         
-        backup_path = backup_orchestrator.create_backup(
-            source_dir,
-            compress=compress,
-            compression_format=compression_format
+        backup_path = create_backup(
+            BackupCommandInput(
+                source_dir=source_dir,
+                backup_dir=backup_dir,
+                compress=compress,
+                compression_format=compression_format,
+            )
         )
         
         if backup_path:
@@ -2439,35 +2193,17 @@ def analyze(
         - Categories that would be created
         - File types found
     """
-    _setup_environment()
-    
     try:
-        source_validation = parse_source_directory_secure(source_dir, max_files)
-        validated_source = _handle_validation_result(source_validation, "Source directory")
+        analysis = analyze_directory(source_dir, max_files)
+        typer.echo(f"\n📊 Analysis of: {analysis.source_dir}")
+        typer.echo(f"  Total files: {analysis.file_count:,}")
+        typer.echo(f"  Unique categories: {len(analysis.categories)}")
         
-        categories = set()
-        file_count = 0
-        category_counts = {}
-        
-        for item in validated_source.iterdir():
-            if item.is_file():
-                file_count += 1
-                try:
-                    category = extract_file_category(item)
-                    categories.add(category)
-                    category_counts[category] = category_counts.get(category, 0) + 1
-                except ValidationError:
-                    continue
-        
-        typer.echo(f"\n📊 Analysis of: {validated_source}")
-        typer.echo(f"  Total files: {file_count:,}")
-        typer.echo(f"  Unique categories: {len(categories)}")
-        
-        if categories:
+        if analysis.categories:
             typer.echo("\n  Categories that would be created:")
-            for category in sorted(categories):
-                count = category_counts.get(category, 0)
-                percentage = (count / file_count * 100) if file_count > 0 else 0
+            for category in analysis.categories:
+                count = analysis.category_counts.get(category, 0)
+                percentage = (count / analysis.file_count * 100) if analysis.file_count > 0 else 0
                 typer.echo(f"    • {category}/ - {count:,} files ({percentage:.1f}%)")
             
     except Exception as e:

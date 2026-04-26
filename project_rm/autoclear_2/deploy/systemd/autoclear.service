@@ -1,0 +1,13 @@
+[Unit]
+Description=Autoclear terminal worker
+Documentation=file:@PROJECT_ROOT@/autoclear_2/deploy/systemd/README.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=@PROJECT_ROOT@/autoclear_2
+ExecStart=@PYTHON_BIN@ @PROJECT_ROOT@/autoclear_2/autoclear.py --once
+Environment=APP_ENV=prod
+Nice=10
+
+[Install]
+WantedBy=default.target

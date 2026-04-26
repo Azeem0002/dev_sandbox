@@ -1,20 +1,3 @@
-"""
-with_retry()
-
-clear_terminal()
-    with_retry()
-    _get_clear_command()
-    _execute_command()
-    
-
-auto_run()
-    loop
-    clear_terminal
-    _sleep
-
-"""
-
-
 import subprocess
 import time
 import os # python standard module for interacting with the operating system
@@ -41,20 +24,14 @@ def _setup_env()->Path:
     dirs = PlatformDirs(appname=APP_NAME, appauthor=APP_AUTHOR)
     
     LOG_DIR= Path(dirs.user_log_dir)
-    CONFIG_DIR= Path(dirs.user_config_dir)
 
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        # DATA_DIR & CACHE_DIR also
     except OSError as e:
         logger.debug(f"Failed to create directory")
         raise PermissionError(f"Failed to create directory") from e
 
     log_file= LOG_DIR / "autoclear.log" 
-    # config_file= CONFIG_DIR / "config.json"
-    # you can find log file in: ~/.local/state/appname
-
     return log_file
 
 
@@ -172,14 +149,13 @@ def with_retry(max_attempts: int, delay: float) -> Callable: # Calls decorator
 # =============================================================================
 def clear_terminal(config: AutoclearConfig) -> None:
     command = _get_clear_command()
-
-    operation = with_retry(config.max_retries, config.retry_delay)(  
-        _execute_command  
-    )  
-    if not operation:
-        logger.error("Too many retires")
-        
+    operation = with_retry(config.max_retries, config.retry_delay)(_execute_command)
     operation(command)
+
+
+def run_autoclear_once(config: AutoclearConfig) -> None:
+    clear_terminal(config)
+    logger.success("Terminal cleared")
 
 # =============================================================================
 # PUBLIC FUNCTION (WORKER LOOP). main() workflow
@@ -193,8 +169,7 @@ def run_autoclear(config: AutoclearConfig) -> None:
         
     while True:
         try:
-            clear_terminal(config)
-            logger.success("Terminal cleared")
+            run_autoclear_once(config)
 
         except RuntimeError: # Loop resilience → Handles permanent failures without crashing
             time.sleep(1) # throttle failures
@@ -206,8 +181,11 @@ def init():
     _setup_logger(LOG_FILE)
 
 if __name__ == "__main__":
-
+    init()
     logger.info(f"Received interval: {sys.argv}")
+    if "--once" in sys.argv:
+        run_autoclear_once(AutoclearConfig())
+        sys.exit(0)
     try:
         interval = int(sys.argv[1]) if len(sys.argv) > 1 else 3600 # 3600 is 1h 
         config = AutoclearConfig(interval)
@@ -215,13 +193,3 @@ if __name__ == "__main__":
     except ValueError:
         logger.info("Invalid time interval. (e.g. 10s, 5, 2h)")
         sys.exit(1)
-
-
-    """
-    sys.argv	        List of command-line arguments
-    sys.argv[0]    	    First argument:Script name (e.g., autoclear.py)
-    sys.argv[1]	        Second argument after script name which is the interval
-    len(sys.argv) > 1	Check if argument was provided and greater than one argument
-    int(sys.argv[1])	Convert argument to integer
-    else 3600	Default value if no argument
-    """

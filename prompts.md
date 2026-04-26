@@ -27,115 +27,116 @@
 
 # Number and answer all questions and sub questions by order
 
-1. is this: if self.schedule_type is ScheduleType.ONCE:
-the same as this:
-if self.schedule_type == ScheduleType.ONCE:
-* if both are correct, which is recommended?
-2. explain what's going on here using simple terms and why they're structured that way:
-def _coerce_job_scheduled_time( 
-    schedule_type: ScheduleType,
-    value: str | datetime | None
-) -> datetime | None:
-    """Normalize persisted/input schedule values into Job's datetime field."""
-    if value is None:
-        return None
+1. could this be written a enum of it's better as a function:
+def _resolve_scheduler_start_mode(foreground: bool) -> str:
+    if foreground:
+        return "foreground"
+    return "background"
 
-    if isinstance(value, datetime):
-        parsed = value
-    elif schedule_type is ScheduleType.ONCE:
-        parsed = datetime.fromisoformat(value)
-    else:
-        hour, minute = map(int, value.split(":"))
-        # Weekly jobs only need a stable local time-of-day anchor.
-        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=LOCAL_TZ)
-    return parsed.astimezone(LOCAL_TZ)
-* what does this mean datetime.fromisofrmat(value)?
-* explain how this are mutually exclusive:
-if isinstance(value, datetime):
-        parsed = value
-    elif schedule_type is ScheduleType.ONCE:
-        parsed = datetime.fromisoformat(value)
-    else:
-        hour, minute = map(int, value.split(":"))
-        # Weekly jobs only need a stable local time-of-day anchor.
-        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
-* what does this mean in simple translation:
-if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=LOCAL_TZ)
-    return parsed.astimezone(LOCAL_TZ)
-* explain this:
-  else:
-        hour, minute = map(int, value.split(":"))
-        # Weekly jobs only need a stable local time-of-day anchor.
-        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
-
-3. what's the difference between this three:
-def _coerce_job_scheduled_time( 
-    schedule_type: ScheduleType,
-    value: str | datetime | None
-) -> datetime | None:
-    """Normalize persisted/input schedule values into Job's datetime field."""
-    if value is None:
-        return None
-
-    if isinstance(value, datetime):
-        parsed = value
-    elif schedule_type is ScheduleType.ONCE:
-        parsed = datetime.fromisoformat(value)
-    else:
-        hour, minute = map(int, value.split(":"))
-        # Weekly jobs only need a stable local time-of-day anchor.
-        parsed = datetime(2000, 1, 3, hour, minute, tzinfo=LOCAL_TZ)
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=LOCAL_TZ) # expected 2 positional argument herein my version. what does it mean?
-    return parsed.astimezone(LOCAL_TZ)
-
-
-def _serialize_scheduled_time(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    return value.isoformat()
-
-
+2. is this correct?
 def _format_scheduled_time(job: Job) -> str:
+    """
+    DISPLAY FORMATTER: datetime → UI human-readable string
+    """
     if job.scheduled_time is None:
         return "-"
     if job.schedule_type is ScheduleType.WEEKLY:
-        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
-    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
-* difference between this: parsed = datetime.fromisoformat(value)
-and this: return value.isoformat()
-* this function seems redundant since it's already in coerce function: def _serialize_scheduled_time(value: datetime | None) -
-* what's the diff between the three
-* explain this:
-if job.schedule_type is ScheduleType.WEEKLY:
-        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")
-    return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M")
-* tis this the only format there is: ("%Y-%m-%d %H:%M")
-3.  what exactly is the job of pydantic in simple terms and analogy?
-4. DeepSeek 
-Winner: Version A (if/if with raise at end)
+        return job.scheduled_time.astimezone(LOCAL_TZ).strftime("%H:%M")  # strftime("%H:%M"): convert datetime → "14:30"
+    iso_time = job.scheduled_time.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M") # .astimezone(): converts datetime to the current timezone
+    cli_time = job.scheduled_time.astimezone(LOCAL_TZ).strftime("%d-%m-%Y %H:%M")
+    return iso_time or cli_time
+3. this:
+DB_PATH=Path(dirs.user_data_dir)
+def _init_db()-> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+or this and why?:
+DB_PATH=Path(dirs.user_data_dir)
+def _init_db()-> None:
+    DB_PATH.mkdir(parents=True, exist_ok=True)
+4. explain this: with sqlite3.connect(DB_PATH) as conn:
+* why are db texts sometimes in capital letters?
+5. explain these:
+ conn.execute("PRAGMA journal_mode=WAL;") # Concurrent reads/writes
+        conn.execute("PRAGMA synchronous=NORMAL;") # Balance safety/speed
+        conn.execute("PRAGMA cache_size=-10000;") # 10MB cache
+        conn.execute("PRAGMA temp_store=MEMORY;") # Temp tables in RAM
+        conn.execute("PRAGMA busy_timeout=5000;") # Wait 5s on locks
+6. explain the concept of this table and how it works:
+conn.execute("""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            command TEXT,
+            schedule_type TEXT,
+            days_of_week TEXT,
+            scheduled_time TEXT,
+            next_run_time TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+        )
+        """)
+* are the capital letters syntax?
+* why is status text not null?
+* does TEXT mean default is NULL?
+* why does id have primary key?
+7. are these attributes of sqlite3:
+sqlite3.Connection
+sqlite3.Row
+* explain this: conn.row_factory= sqlite3.Row
+* is cast() a method of sqlite3?if not, explain the concept of cast()
+* is .fetchall() a method of sqlite3?
+8. explain this function line by line:
+def _cleanup_jobs_table(conn: sqlite3.Connection) -> int:
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("""
+        SELECT id, name, next_run_time
+        FROM jobs
+        ORDER BY next_run_time, id
+    """).fetchall()
 
-Why:
+    invalid_ids: list[str] = []
+    duplicate_ids: list[str] = []
+    seen_names: set[str] = set()
 
-· Both work identically (early return exits function)
-· Version A is cleaner (less nesting)
-· elif is redundant when first branch returns
+    for row in rows:
+        job_id = cast(str | None, row["id"])
+        raw_name = cast(str, row["name"] or "")
 
-Rule of thumb: If each branch returns, use if. If continuing execution, use elif.
-Vs chatgpt:
-Best fix
-Use elif → clearer intent
-Performance difference = negligible
-5. is scheduler program is tied to its job, can we use start_new_session to make job child process in subprocess.run()?
+        try:
+            normalized_name = _normalize_name_key(raw_name)
+        except ValueError:
+            if job_id:
+                invalid_ids.append(job_id)
+            continue
+
+        if normalized_name in seen_names:
+            if job_id:
+                duplicate_ids.append(job_id)
+            continue
+
+        seen_names.add(normalized_name)
+
+    removed_count = _delete_jobs_by_ids(conn, invalid_ids + duplicate_ids)
+
+    for job_id in invalid_ids:
+        logger.warning(f"Removed invalid job with empty name ({_format_job_id(job_id)})")
+    for job_id in duplicate_ids:
+        logger.warning(f"Removed duplicate job name ({_format_job_id(job_id)})")
+
+    return removed_count
+9. explain this def _normalize_name_key(value: str) -> str:
+    return _validate_name(value).casefold()
+10. explain this files:
+platform_adapter.py  runtime_support.py
+controller.py   process_adapter.py   systemd_adapter.py
+11. 
 
 # To Fix from root problems not symptoms
-1. 
+1. scheduler doesn't have a process adapter and systemd adapter
+*
+platform_adapter.py  runtime_support.py
+controller.py   process_adapter.py   systemd_adapter.py
 
+* lifecycle_models.py  platform_adapter.py  process_adapter.py   runtime_support.py  scheduler.py  service_adapter.py
 
 ================================================================================================================
 
@@ -170,6 +171,7 @@ Rules:
 - Boundary layers accept input and present output.
 - Core should remain mostly stable if frameworks or infrastructure change.
 - Keep side effects at the edges.
+- maintain system design across projects and use same reusable function names across projects
 
 ## FLOW
 INPUT -> PARSE -> CLEAN -> DECIDE -> SAVE -> EXECUTE -> LOG -> PRESENT
@@ -188,6 +190,10 @@ INPUT -> PARSE -> CLEAN -> DECIDE -> SAVE -> EXECUTE -> LOG -> PRESENT
 ## PRACTICAL CONSTRAINTS
 - Keep structure flat and readable where possible.
 - If parameters start growing, introduce a model instead of bloating signatures.
+- Use-Case Orchestrator Pattern as the main pattern
+Responsibility Ladder Pattern for sub-steps
+Branch Label Pattern where a function forks
+optional Inline Flow Map only on important public entry points.
 - Design for testability, replaceability, and low maintenance cost.
 - Run and test code after implementation when feasible.
 
