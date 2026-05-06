@@ -6,23 +6,43 @@ from pathlib import Path
 
 from loguru import logger
 
-from lifecycle_models import AutoclearStatus
-from runtime_support import (
-    SYSTEMD_SERVICE_NAME,
-    SYSTEMD_TIMER_NAME,
-    _get_worker_script_path,
-)
+try:
+    from .lifecycle_models import AutoclearStatus
+    from .platform_adapter import detect_platform
+    from .runtime_support import get_worker_script_path
+except ImportError:
+    from lifecycle_models import AutoclearStatus
+    from platform_adapter import detect_platform
+    from runtime_support import get_worker_script_path
 
 
+SYSTEMD_SERVICE_NAME = "autoclear.service"
+WINDOWS_TASK_NAME = "Autoclear"
+SYSTEMD_TIMER_NAME = "autoclear.timer"
+
+# Runtime shape:
+# - Linux: a systemd timer acts as the alarm clock and triggers the autoclear service.
+# - Windows: one Task Scheduler entry launches the long-running autoclear worker at logon.
+
+# ============================================
+# Service adapter - reusable mental map
+# ============================================
+
+# ============================================
+# Shared private skeleton - start reading here
+# ============================================
 def _format_exec_args(args: list[str]) -> str:
+    """Shell-quote each argument before embedding it into a systemd unit file."""
     return " ".join(shlex.quote(arg) for arg in args)
 
 
 def _get_systemd_user_dir() -> Path:
+    """Return the per-user systemd unit directory on Linux."""
     return Path.home() / ".config/systemd/user"
 
 
 def _build_systemd_service(*, system: bool) -> str:
+    """Build the worker service that clears the terminal once per trigger."""
     service_lines = [
         "[Unit]",
         "Description=Autoclear terminal worker",
@@ -35,8 +55,8 @@ def _build_systemd_service(*, system: bool) -> str:
         service_lines.append(f"User={getpass.getuser()}")
 
     service_lines.extend([
-        f"WorkingDirectory={_get_worker_script_path().parent}",
-        f"ExecStart={_format_exec_args([sys.executable, str(_get_worker_script_path()), '--once'])}",
+        f"WorkingDirectory={get_worker_script_path().parent}",
+        f"ExecStart={_format_exec_args([sys.executable, str(get_worker_script_path()), '--once'])}",
         "Environment=APP_ENV=prod",
         "Nice=10",
         "",
@@ -47,7 +67,28 @@ def _build_systemd_service(*, system: bool) -> str:
     return "\n".join(service_lines)
 
 
+def _build_windows_task_command(interval_secs: int) -> list[str]:
+    """Build the `schtasks` command that launches the autoclear worker at logon."""
+    # Windows Task Scheduler cannot use "every N seconds" as flexibly as systemd timers.
+    # Use a startup task that launches the long-running autoclear worker with its interval argument.
+    task_target = subprocess.list2cmdline([sys.executable, str(get_worker_script_path()), str(interval_secs)])
+    return [
+        "schtasks",
+        "/create",
+        "/tn",
+        WINDOWS_TASK_NAME,
+        "/tr",
+        task_target,
+        "/sc",
+        "onlogon",
+        "/rl",
+        "limited",
+        "/f",
+    ]
+
+
 def _build_systemd_timer(interval_secs: int, *, system: bool) -> str:
+    """Build the timer unit that acts like an alarm clock for the worker service."""
     del system
     timer_lines = [
         "[Unit]",
@@ -68,6 +109,7 @@ def _build_systemd_timer(interval_secs: int, *, system: bool) -> str:
 
 
 def _run_system_command(command: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run one external OS command and capture stdout/stderr for adapter-level decisions."""
     return subprocess.run(
         command,
         input=input_text,
@@ -78,6 +120,8 @@ def _run_system_command(command: list[str], *, input_text: str | None = None) ->
 
 
 def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProcess[str]:
+    # `systemctl --user` manages per-user units.
+    # Plain `systemctl` manages system-wide units.
     base = ["systemctl"]
     if not system:
         base.append("--user")
@@ -85,6 +129,7 @@ def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProc
 
 
 def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) -> str | None:
+    """Read one systemd unit property using `systemctl show`."""
     result = _run_systemctl(["show", unit_name, f"--property={property_name}", "--value"], system=system)
     if result.returncode != 0:
         return None
@@ -92,10 +137,22 @@ def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) 
 
 
 def _is_systemd_timer_enabled(*, system: bool) -> bool:
+    # For autoclear, the timer is the thing that gets enabled, not the oneshot service.
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "UnitFileState", system=system) == "enabled"
 
 
+def _install_windows_task(interval_secs: int) -> None:
+    """Create the Windows Task Scheduler entry for the autoclear worker."""
+    result = _run_system_command(_build_windows_task_command(interval_secs))
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to create Windows task")
+
+
+# ============================================
+# Project-specific extensions - timer backend
+# ============================================
 def _install_systemd_user(service_content: str, timer_content: str) -> tuple[Path, Path]:
+    """Write both the worker service and timer into the current user's systemd directory."""
     systemd_dir = _get_systemd_user_dir()
     systemd_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +164,7 @@ def _install_systemd_user(service_content: str, timer_content: str) -> tuple[Pat
 
 
 def _install_systemd_system(service_content: str, timer_content: str) -> tuple[Path, Path]:
+    """Install both the worker service and timer into `/etc/systemd/system`."""
     service_path = Path("/etc/systemd/system") / SYSTEMD_SERVICE_NAME
     timer_path = Path("/etc/systemd/system") / SYSTEMD_TIMER_NAME
 
@@ -122,10 +180,12 @@ def _install_systemd_system(service_content: str, timer_content: str) -> tuple[P
 
 
 def _is_systemd_timer_installed(*, system: bool) -> bool:
+    # `loaded` means systemd can see and parse the timer unit file.
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "LoadState", system=system) == "loaded"
 
 
 def _status_from_systemd(*, system: bool) -> AutoclearStatus:
+    """Summarize the installed timer/service state into one app-facing status model."""
     if not _is_systemd_timer_installed(system=system):
         return AutoclearStatus(
             backend="systemd",
@@ -154,6 +214,7 @@ def _status_from_systemd(*, system: bool) -> AutoclearStatus:
 
 
 def _start_with_systemd(interval_secs: int, *, system: bool) -> str:
+    """Enable/start the autoclear timer backend using systemd."""
     del interval_secs
 
     if not _is_systemd_timer_installed(system=system):
@@ -179,6 +240,7 @@ def _start_with_systemd(interval_secs: int, *, system: bool) -> str:
 
 
 def _stop_with_systemd(*, system: bool) -> str:
+    """Disable/stop the autoclear timer backend using systemd."""
     if not _is_systemd_timer_installed(system=system):
         return "STOPPED: Autoclear already stopped"
 
@@ -191,3 +253,82 @@ def _stop_with_systemd(*, system: bool) -> str:
         raise RuntimeError(service_result.stderr.strip() or "Failed to stop systemd service")
 
     return "STOPPED: Autoclear systemd backend stopped"
+
+
+# ============================================
+# Public adapter API - stable reusable surface
+# ============================================
+def install_service(*, interval_secs: int | None = None, system: bool = False) -> tuple[str, list[str]]:
+    """Install the native OS service/task definition for autoclear."""
+    if interval_secs is None:
+        raise ValueError("interval_secs is required to install autoclear service")
+
+    platform = detect_platform()
+
+    if platform == "windows":
+        _install_windows_task(interval_secs)
+        return (
+            f"Windows Task '{WINDOWS_TASK_NAME}' created",
+            ["Task will run when the current user logs on and launch the autoclear worker."],
+        )
+
+    if platform != "linux":
+        if platform == "mac":
+            return (
+                "macOS not yet supported",
+                ["Use launchd manually or run `autoclear start`."],
+            )
+        raise RuntimeError(f"Unsupported platform: {platform}")
+
+    service_content = _build_systemd_service(system=system)
+    timer_content = _build_systemd_timer(interval_secs, system=system)
+
+    if system:
+        service_path, timer_path = _install_systemd_system(service_content, timer_content)
+        return (
+            f"Installed system service at {service_path} and timer at {timer_path}",
+            [
+                "sudo systemctl daemon-reload",
+                "Then run `autoclear start` to enable and start the installed timer.",
+            ],
+        )
+
+    service_path, timer_path = _install_systemd_user(service_content, timer_content)
+    return (
+        f"Installed user service at {service_path} and timer at {timer_path}",
+        [
+            "systemctl --user daemon-reload",
+            f"loginctl enable-linger {getpass.getuser()}",
+            "Then run `autoclear start` to enable and start the installed timer.",
+        ],
+    )
+
+
+def service_is_installed(*, system: bool = False) -> bool:
+    """Report whether the native service definition is installed."""
+    platform = detect_platform()
+    if platform == "linux":
+        return _is_systemd_timer_installed(system=system)
+    return False
+
+
+def start_service(*, interval_secs: int | None = None, system: bool = False) -> str:
+    """Start the installed native service backend."""
+    platform = detect_platform()
+    if platform == "windows":
+        raise RuntimeError("Windows task start is not exposed through service_adapter")
+    if platform != "linux":
+        raise RuntimeError(f"Unsupported platform: {platform}")
+    if interval_secs is None:
+        raise ValueError("interval_secs is required to start autoclear service")
+    return _start_with_systemd(interval_secs, system=system)
+
+
+def stop_service(*, system: bool = False) -> str:
+    """Stop the installed native service backend."""
+    platform = detect_platform()
+    if platform == "windows":
+        raise RuntimeError("Windows task stop is not exposed through service_adapter")
+    if platform != "linux":
+        raise RuntimeError(f"Unsupported platform: {platform}")
+    return _stop_with_systemd(system=system)

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -7,11 +8,11 @@ class SchedulerStatus:
     is_running: bool
     pid: int | None
     process_status: str | None
-    started_at: str | None
+    started_at: datetime | None
     pid_file: Path
     active_jobs: int
     paused_jobs: int
 
     @property
-    def total_jobs(self) -> int:
+    def total_jobs(self) -> int: # Computed/Derived data, not stored as property method not field
         return self.active_jobs + self.paused_jobs

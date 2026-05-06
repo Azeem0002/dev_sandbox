@@ -106,7 +106,7 @@ git config --global alias.pushboth "push both main"
 git pushboth
 
 
-### Dualboot crash fix:
+### Dualboot debian crash fix:
 
 <!-- -Check current entries:  -->
 - sudo efibootmgr -v

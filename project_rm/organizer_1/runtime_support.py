@@ -7,9 +7,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from loguru import logger
 from platformdirs import PlatformDirs
 
+try:
+    from .models import APP_CONFIG, BACKUP_DIR, LOG_DIR
+except ImportError:
+    from models import APP_CONFIG, BACKUP_DIR, LOG_DIR
 
-APP_NAME = "scheduler"
-APP_AUTHOR = "Al-Azeem"
 
 # ============================================
 # Runtime adapter - reusable mental map
@@ -20,7 +22,7 @@ APP_AUTHOR = "Al-Azeem"
 # ============================================
 def get_platform_dirs() -> PlatformDirs:
     """Return the per-user app directories chosen by `platformdirs`."""
-    return PlatformDirs(APP_NAME, APP_AUTHOR)
+    return PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
 
 
 def is_dev_env() -> bool:
@@ -30,76 +32,69 @@ def is_dev_env() -> bool:
 
 def get_local_timezone():
     """Resolve local timezone from env override -> OS timezone -> UTC fallback."""
-    tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ") # try user custom timezone in  env var, fallback to system wide TZ.
+    tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ")
     if tz_name:
         try:
-            return ZoneInfo(tz_name)  # → convert string → timezone object
+            return ZoneInfo(tz_name)
         except ZoneInfoNotFoundError:
             logger.warning(f"Unknown timezone '{tz_name}', falling back to system local timezone")
 
-    detected = datetime.now().astimezone().tzinfo # Get the current time → convert to local timezone → extract the timezone object.
+    detected = datetime.now().astimezone().tzinfo
     if detected is not None:
         return detected
 
     return ZoneInfo("UTC")
 
 
+# REUSABLE: small cross-project pattern for preparing app-owned directories.
 def setup_environment() -> Path:
-    """Create the app log directory and return the concrete log file path."""
-    dirs = get_platform_dirs()
-    log_dir = Path(dirs.user_log_dir)
-
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as error:
-        logger.debug("Failed to create directory")
-        raise PermissionError("Failed to create directory") from error
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError as error:
+        logger.error(
+            f"Cannot create directories. Check write permissions for: {BACKUP_DIR.parent} and {LOG_DIR}"
+        )
+        raise PermissionError(f"Directory creation failed: {error}") from error
+    return LOG_DIR / "organizer.log"
 
-    return log_dir / "scheduler.log"
 
-
-def setup_logger(file_log: Path) -> None:
-    """Configure stdout logging plus rotating file logging for this CLI app."""
+# REUSABLE: dual logger setup pattern for CLI apps.
+def setup_logger(log_file: Path) -> None:
     logger.remove()
-
     if not is_dev_env():
         logger.add(
-            sink=sys.stdout,
+            sink=sys.stderr,
             level="INFO",
+            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+            colorize=True,
+            backtrace=True,
+            catch=True,
         )
     else:
         logger.add(
-            sink=sys.stdout,
+            sink=sys.stderr,
             level="DEBUG",
-            format="<cyan>{time:YYYY-MM-DD HH:mm:ss}</cyan> | "
-            "{level: <8} | "
-            "{module}.{function}:{line} | "
-            "<level>{message}</level>",
+            format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
             colorize=True,
-            enqueue=True,
             backtrace=True,
+            catch=True,
         )
-
     logger.add(
-        sink=file_log,
+        sink=str(log_file),
         level="DEBUG",
         format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {module}.{function}:{line} | {message}",
-        rotation="1 MB",
-        retention="3 days",
-        compression="zip",
+        rotation="10 MB",
+        retention="30 days",
+        compression="gz",
+        serialize=True,
         enqueue=True,
-        serialize=False,
-        backtrace=False,
-        diagnose=False,
-        catch=False,
+        backtrace=True,
+        catch=True,
     )
 
 
 # ============================================
 # Backward-compatible aliases - old names
 # ============================================
-_get_platform_dirs = get_platform_dirs
-_is_dev_env = is_dev_env
-_get_local_timezone = get_local_timezone
-_setup_env = setup_environment
-_setup_logger = setup_logger
+setup_runtime_environment = setup_environment

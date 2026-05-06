@@ -1,8 +1,15 @@
 import os
 import sys
 
+# ============================================
+# Platform adapter - reusable mental map
+# ============================================
 
-def _detect_platform() -> str:
+# ============================================
+# Public adapter API - stable reusable surface
+# ============================================
+
+def detect_platform() -> str:
     if os.name == "nt":
         return "windows"
 
@@ -13,3 +20,6 @@ def _detect_platform() -> str:
         return "mac"
 
     return "unknown"
+
+
+_detect_platform = detect_platform

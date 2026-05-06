@@ -4,20 +4,34 @@ import time
 
 import typer
 
-from application import (
-    get_autoclear_status,
-    install_autoclear_service,
-    restart_autoclear,
-    start_autoclear,
-    stop_autoclear,
-)
-from lifecycle_models import AutoclearStatus
-from runtime_support import _setup_env, _setup_logger
+try:
+    from .application import (
+        get_autoclear_status,
+        install_autoclear_service,
+        restart_autoclear,
+        start_autoclear,
+        stop_autoclear,
+    )
+    from .lifecycle_models import AutoclearStatus
+    from .runtime_support import _is_dev_env, _setup_env, _setup_logger
+except ImportError:
+    from application import (
+        get_autoclear_status,
+        install_autoclear_service,
+        restart_autoclear,
+        start_autoclear,
+        stop_autoclear,
+    )
+    from lifecycle_models import AutoclearStatus
+    from runtime_support import _is_dev_env, _setup_env, _setup_logger
 
 
 app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear controller")
 
 
+# ============================================
+# CLI - Thin wrapper around orchestration
+# ============================================
 @app.callback()
 def init() -> None:
     log_file = _setup_env()
@@ -34,7 +48,7 @@ def _format_autoclear_status(status: AutoclearStatus) -> str:
         parts.append(f"interval={status.interval_seconds}s")
     if status.last_trigger:
         parts.append(f"last_trigger={status.last_trigger}")
-    if status.pid_file is not None:
+    if status.pid_file is not None and _is_dev_env():
         parts.append(f"pid_file={status.pid_file}")
     if status.detail:
         parts.append(f"detail={status.detail}")
@@ -92,5 +106,9 @@ def install_service(
         typer.echo(step)
 
 
-if __name__ == "__main__":
+def main() -> None:
     app()
+
+
+if __name__ == "__main__":
+    main()

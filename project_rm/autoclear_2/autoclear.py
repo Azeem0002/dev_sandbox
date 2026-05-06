@@ -104,9 +104,6 @@ def _execute_command(command: list[str]) -> None:
         # RuntimeError: for hiding low level details for orchestrations
         # Reraise better error message- Optional
 
-def _sleep(seconds: int) -> None:
-    time.sleep(seconds)
-
 
 # =============================================================================
 # FEATURES (COMPOSABLE)
@@ -173,7 +170,7 @@ def run_autoclear(config: AutoclearConfig) -> None:
 
         except RuntimeError: # Loop resilience → Handles permanent failures without crashing
             time.sleep(1) # throttle failures
-        _sleep(config.interval)
+        time.sleep(config.interval)
 
    
 def init():
