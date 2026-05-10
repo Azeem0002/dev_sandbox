@@ -43,11 +43,15 @@ except ImportError:
 # ============================================
 # Platform-appropriate data directory
 dirs = get_platform_dirs()
-DB_PATH = Path(dirs.user_data_dir) / "jobs.db"
 # if path is a file, create a .parent, else it pathlib will make path a directory
+
+def _get_db_path() -> Path:
+    """Return the database file path."""
+    return Path(dirs.user_data_dir) / "jobs.db"
 
 
 def _normalize_job_name_for_storage(value: str) -> str:
+    """Normalize job name for storage."""
     cleaned = value.strip()
     if not cleaned:
         raise ValueError("Name cannot be empty")
@@ -122,6 +126,8 @@ def _cleanup_jobs_table(conn: sqlite3.Connection) -> int:
 
     return removed_count # Report total number of jobs removed.
 
+
+DB_PATH = _get_db_path() # resolved module-level path
 
 def _init_db() -> None:
     """Initialize database schema(blueprint/structure) and indexes."""
@@ -285,10 +291,44 @@ def _update_job_status(job_id: str, status: JobStatus) -> None:
         # In the jobs table, find the row with this ID, and change its status to this value.
         # ?: Prevents SQL injection. Never do: f"WHERE id = {job_id}"
 
-
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+
 def get_db_path() -> Path:
     """Return the database file path."""
-    return DB_PATH
+    return _get_db_path()
+
+def init_db() -> None:
+    """Public wrapper for initializing the scheduler database schema."""
+    _init_db()
+
+
+def insert_job(job: Job) -> Job:
+    """Public wrapper for inserting one scheduler job into SQLite."""
+    return _insert_job(job)
+
+
+def fetch_jobs() -> list[Job]:
+    """Public wrapper for loading scheduler jobs from SQLite."""
+    return _fetch_jobs()
+
+
+def remove_job_from_db(job_id: str) -> bool:
+    """Public wrapper for deleting one scheduler job row by ID."""
+    return _remove_job_from_db(job_id)
+
+
+def count_jobs() -> int:
+    """Public wrapper for counting total scheduler jobs."""
+    return _count_jobs()
+
+
+def count_jobs_by_status() -> dict[str, int]:
+    """Public wrapper for counting scheduler jobs grouped by status."""
+    return _count_jobs_by_status()
+
+
+def update_job_status(job_id: str, status: JobStatus) -> None:
+    """Public wrapper for updating one scheduler job status."""
+    _update_job_status(job_id, status)

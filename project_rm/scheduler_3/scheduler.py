@@ -35,13 +35,13 @@ from apscheduler.jobstores.base import JobLookupError               # "Job not f
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 try:
     from .database_adapter import (
-        _init_db,
-        _insert_job,
-        _fetch_jobs,
-        _remove_job_from_db,
-        _count_jobs,
-        _count_jobs_by_status,
-        _update_job_status,
+        init_db,
+        insert_job,
+        fetch_jobs,
+        remove_job_from_db,
+        count_jobs,
+        count_jobs_by_status,
+        update_job_status,
     )
     from .job_models import Job, JobStatus, ScheduleType, parse_scheduled_time_from_storage, format_job_id
     from .lifecycle_models import SchedulerStatus
@@ -58,13 +58,13 @@ try:
     from .service_adapter import install_service
 except ImportError:
     from database_adapter import (
-        _init_db,
-        _insert_job,
-        _fetch_jobs,
-        _remove_job_from_db,
-        _count_jobs,
-        _count_jobs_by_status,
-        _update_job_status,
+        init_db,
+        insert_job,
+        fetch_jobs,
+        remove_job_from_db,
+        count_jobs,
+        count_jobs_by_status,
+        update_job_status,
     )
     from job_models import Job, JobStatus, ScheduleType, parse_scheduled_time_from_storage, format_job_id
     from lifecycle_models import SchedulerStatus
@@ -122,6 +122,7 @@ class AddJobInput(BaseModel): #Job application form
     @field_validator("name") # Inspecting each ingredient separately
     @classmethod  # Called on the class, before instance exists
     def _adapt_name_for_model(cls, value: str) -> str: # cls: because the instance doesn't exist yet
+        """Adapt name for model."""
         return _normalize_job_name(value)
 
     @field_validator("command", mode="before") 
@@ -129,12 +130,14 @@ class AddJobInput(BaseModel): #Job application form
     @classmethod
     def _adapt_command_for_model(cls, value: Any) -> str:
         # Keep 'type: Any' for mode="before". data could be any type
+        """Adapt command for model."""
         return _normalize_command(value)[0]
 
     @field_validator("schedule_type", mode="before") # mode="before": Before Pydantic type conversion
     @classmethod
     def _adapt_schedule_type_for_model(cls, value: Any) -> ScheduleType:
         # Any acknowledges "we don't know what we'll get yet" before Pydantic coerces to enum.
+        """Adapt schedule type for model."""
         if not isinstance(value, str): # validates correct type
             raise ValueError("Schedule type must be text")
         return _validate_schedule_type(value)
@@ -142,11 +145,13 @@ class AddJobInput(BaseModel): #Job application form
     @field_validator("days_of_week")
     @classmethod
     def _adapt_days_for_model(cls, value: list[int] | None) -> list[int] | None:
+        """Adapt days for model."""
         return _normalize_days_list(value)
 
     @field_validator("scheduled_time")
     @classmethod
     def _adapt_scheduled_time_for_model(cls, value: str | None) -> str | None:
+        """Adapt scheduled time for model."""
         if value is None:
             return None
         return value.strip()
@@ -154,6 +159,7 @@ class AddJobInput(BaseModel): #Job application form
     @model_validator(mode="after") # model_validator: checking multiple fields at once. comes last after all field validations
     # mode="after": After pydantic type conversion 
     def _validate_schedule_shape(self) -> "AddJobInput": #self: after the instance exists
+        """Validate schedule shape."""
         if self.schedule_type == ScheduleType.ONCE:  # checks if user is using the schedule type once.
             if not self.scheduled_time:  # once jobs need a time
                 raise ValueError("One-time jobs require a scheduled time")
@@ -273,7 +279,7 @@ def _execute_job_commands(commands: list[str]) -> None:
         logger.error("TIMEOUT after 300s")
     except FileNotFoundError:
         logger.error(f"NOT FOUND: {commands[0] if commands else 'unknown'}")
-    except (RuntimeError, Exception) as e:
+    except Exception as e:
         logger.error(f"ERROR: {type(e).__name__}: {e}")
     finally:
         logger.info(f"COMPLETED: exit {returncode}")
@@ -333,7 +339,7 @@ def _resolve_job_identifier(identifier: str) -> Job:
     Resolve: figure out user input (full id, short id, or name) → full job_id
     """
     token = identifier.strip()
-    jobs = _fetch_jobs()
+    jobs = fetch_jobs()
 
     # 1. Exact ID match
     for job in jobs:
@@ -358,13 +364,15 @@ def _resolve_job_identifier(identifier: str) -> Job:
     raise ValueError(f"Job '{token}' not found")
     
 def _find_job_by_name(name: str) -> Job | None:
+    """Find job by name."""
     normalized_name = name.strip().casefold() # Aggressive lowercase for case-insensitive comparison.
-    for job in _fetch_jobs():
+    for job in fetch_jobs():
         if job.name.strip().casefold() == normalized_name:
             return job
     return None
 
 def _status_label(status: JobStatus) -> str:
+    """Status label."""
     if status is JobStatus.PAUSED:
         return "⏸ paused"
     return "▶ active"
@@ -372,7 +380,7 @@ def _status_label(status: JobStatus) -> str:
 def _load_jobs_from_database() -> int:
     """Restore all active jobs from database on startup"""
 
-    jobs = _fetch_jobs()
+    jobs = fetch_jobs()
     loaded = 0
     
     if not jobs:
@@ -398,7 +406,7 @@ def _load_jobs_from_database() -> int:
             except ValueError as e:
                 display_id = format_job_id(job.id)
                 logger.error(f"  ✗ [{display_id}] Invalid config: {e}")
-            except Exception as e:
+            except (RuntimeError, OSError) as e:
                 display_id = format_job_id(job.id)
                 logger.error(f"  ✗ [{display_id}] Failed to load  job: {type(e).__name__}")
         else:
@@ -408,6 +416,7 @@ def _load_jobs_from_database() -> int:
     return loaded
 
 def _require_non_empty_text(value: str, field_name: str) -> str:
+    """Require non empty text."""
     cleaned = value.strip() if isinstance(value, str) else ""
     if not cleaned:
         raise ValueError(f"{field_name} cannot be empty")
@@ -415,6 +424,7 @@ def _require_non_empty_text(value: str, field_name: str) -> str:
 
 
 def _normalize_job_name(value: str) -> str:
+    """Normalize job name."""
     cleaned = _require_non_empty_text(value, "Name")
     if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
         inner = cleaned[1:-1].strip()
@@ -427,6 +437,7 @@ def _normalize_job_name(value: str) -> str:
     return cleaned
 
 def _normalize_command(value: Any) -> tuple[str, list[str]]:
+    """Normalize command."""
     if not isinstance(value, str):
         raise ValueError("Command must be text")
     cleaned = value.strip()
@@ -461,6 +472,7 @@ def _parse_command_input(value: str) -> str:
     return _normalize_command(value)[0]
 
 def _normalize_days_list(value: list[int] | None) -> list[int] | None:
+    """Normalize days list."""
     if value is None:
         return None
 
@@ -471,6 +483,7 @@ def _normalize_days_list(value: list[int] | None) -> list[int] | None:
     return normalized
 
 def _validate_unique_job_name(value: str) -> str:
+    """Validate unique job name."""
     cleaned = _normalize_job_name(value)
     existing = _find_job_by_name(cleaned)
     if existing is not None:
@@ -539,14 +552,17 @@ def _parse_days_input(value: str) -> list[int]:
 
 
 def _format_next_run_local(job: Job) -> str:
+    """Format next run local."""
     return job.next_runtime.astimezone(LOCAL_TZ).strftime("%Y-%m-%d %H:%M %Z")
 
 
 def _format_next_run_utc(job: Job) -> str:
+    """Format next run utc."""
     return job.next_runtime.astimezone(STORAGE_TZ).strftime("%Y-%m-%d %H:%M %Z")
 
 
 def _format_started_at(value: datetime | None) -> str:
+    """Format started at."""
     if value is None:
         return "-"
     return value.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -590,9 +606,10 @@ app = typer.Typer(
 def init():
     # Boundary setup only. This is not business logic.
     # We prepare logging and ensure the DB schema exists before any CLI command runs.
+    """Initialize the runtime environment for this module."""
     file_log = _setup_env()
     _setup_logger(file_log)
-    _init_db()
+    init_db()
 
 """
 Not core:
@@ -680,7 +697,7 @@ def _parse_weekly_time_input(value: str) -> str:
 def _parse_once_datetime_input(value: str) -> str:
     """Validate a one-time CLI datetime and normalize it."""
     try:
-        return datetime.fromisoformat(value.strip()).isoformat()
+        return datetime.fromisoformat(value.strip()).isoformat() # Parse string → datetime, then back to string. This normalizes formats.
     except ValueError as e:
         raise ValueError("Use ISO datetime (e.g., 2026-04-19T13:00)") from e
         # ISO = International Organization for Standardization
@@ -822,7 +839,9 @@ def list_command(verbose: bool = typer.Option(False, "--verbose", "-v")):
 
             if job.days_of_week:
                 days_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                days_str = ", ".join(days_names[d-1] for d in job.days_of_week)
+
+                # Translation: "For each day number in days_of_week, look up its name from the list."
+                days_str = ", ".join(days_names[d-1] for d in job.days_of_week) # Convert numbers → names
                 typer.echo(f"  Days: {days_str}")
             typer.echo(f"  Scheduled time (local): {_format_scheduled_time(job)}")
             typer.echo(f"  Next run (local): {_format_next_run_local(job)}")
@@ -843,26 +862,26 @@ def start(
     
     try:
         mode = RunMode.FOREGROUND if foreground else RunMode.BACKGROUND
-        
+
+        message = start_scheduler(foreground) # Always define variables before branches, not inside them
+
         if foreground:
             if os.name == 'nt':
                 typer.echo("Starting scheduler (Windows mode)...")
             else:
                 typer.echo("Starting scheduler (Ctrl+C to stop)...")
-
-        message = start_scheduler(foreground)
         
-        if not foreground:
+        else:
             typer.echo(f"✓ {message}")
             scheduler_status = get_scheduler_status()
             typer.echo(
                 f"Jobs: {scheduler_status.total_jobs} total | "
                 f"{scheduler_status.active_jobs} active | "
                 f"{scheduler_status.paused_jobs} paused"
-            )
+                )
         
         return mode
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
 

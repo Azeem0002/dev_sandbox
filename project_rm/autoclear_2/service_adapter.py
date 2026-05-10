@@ -1,3 +1,9 @@
+"""Native service/task adapter for autoclear.
+
+Linux uses a timer + service pair. Windows uses Task Scheduler.
+This layer knows how to install/control those native OS integrations.
+"""
+
 import getpass
 import shlex
 import subprocess
@@ -122,6 +128,7 @@ def _run_system_command(command: list[str], *, input_text: str | None = None) ->
 def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProcess[str]:
     # `systemctl --user` manages per-user units.
     # Plain `systemctl` manages system-wide units.
+    """Run systemctl."""
     base = ["systemctl"]
     if not system:
         base.append("--user")
@@ -138,6 +145,7 @@ def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) 
 
 def _is_systemd_timer_enabled(*, system: bool) -> bool:
     # For autoclear, the timer is the thing that gets enabled, not the oneshot service.
+    """Return whether systemd timer enabled."""
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "UnitFileState", system=system) == "enabled"
 
 
@@ -181,6 +189,7 @@ def _install_systemd_system(service_content: str, timer_content: str) -> tuple[P
 
 def _is_systemd_timer_installed(*, system: bool) -> bool:
     # `loaded` means systemd can see and parse the timer unit file.
+    """Return whether systemd timer installed."""
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "LoadState", system=system) == "loaded"
 
 

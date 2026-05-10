@@ -1,3 +1,9 @@
+"""Shared job/domain models for scheduler.
+
+Persistence and orchestration both rely on the same meanings for job status,
+schedule type, and schedule-time conversion.
+"""
+
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -14,11 +20,13 @@ LOCAL_TZ = _get_local_timezone()
 
 # Object: An instance of a class, Noun: Name of thing
 class ScheduleType(StrEnum):
+    """Allowed schedule shapes understood by the scheduler domain."""
     ONCE = "once"
     WEEKLY = "weekly"
 
 
 class JobStatus(StrEnum):
+    """Persisted/lived state of a scheduled job."""
     ACTIVE = "active"
     PAUSED = "paused"
 

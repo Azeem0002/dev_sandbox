@@ -1,3 +1,9 @@
+"""Standalone autoclear worker.
+
+This is the executable worker process that actually clears the terminal.
+Adapters may launch it directly in foreground, background, or via OS schedulers.
+"""
+
 import subprocess
 import time
 import os # python standard module for interacting with the operating system
@@ -25,11 +31,7 @@ def _setup_env()->Path:
     
     LOG_DIR= Path(dirs.user_log_dir)
 
-    try:
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        logger.debug(f"Failed to create directory")
-        raise PermissionError(f"Failed to create directory") from e
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     log_file= LOG_DIR / "autoclear.log" 
     return log_file
@@ -37,6 +39,7 @@ def _setup_env()->Path:
 
 def _setup_logger(log_file: Path)-> None:
     
+    """Setup logger."""
     logger.remove() # remove default settings/ink
 
     ENV = os.getenv("APP_ENV", "dev") # os.getenv(key, value)
@@ -89,12 +92,14 @@ class AutoclearConfig:
 # =============================================================================
 
 def _get_clear_command() -> list[str]:
+    """Return clear command."""
     return ["cmd", "/c", "cls"] if os.name == "nt" else ["clear"]
     # "/c": run command and exit
     
 def _execute_command(command: list[str]) -> None:
     # subprocess.run() expects command as list of arguments, not a single string. ["command", "arg1", "arg2"]
     # List prevents command injection vulnerabilities
+    """Execute command."""
     try:
         subprocess.run(command, timeout=5, check=True)
         # logger.info("Terminal cleared")
@@ -109,11 +114,13 @@ def _execute_command(command: list[str]) -> None:
 # FEATURES (COMPOSABLE)
 # =============================================================================
 def _log_before(retry_state): # Counting
+    """Log before."""
     attempt = retry_state.attempt_number
     logger.info(f"Attempt {attempt}/{retry_state.retry_object.stop.max_attempt_number}")
     
 
 def _log_after(retry_state):
+    """Log after."""
     if retry_state.outcome.failed:
         logger.warning(f"Attempt failed: {retry_state.outcome.exception()}")
     else:
@@ -145,12 +152,14 @@ def with_retry(max_attempts: int, delay: float) -> Callable: # Calls decorator
 # PUBLIC FUNCTION (LEVEL 1 ORCHESTRATION)
 # =============================================================================
 def clear_terminal(config: AutoclearConfig) -> None:
+    """Clear terminal."""
     command = _get_clear_command()
     operation = with_retry(config.max_retries, config.retry_delay)(_execute_command)
     operation(command)
 
 
 def run_autoclear_once(config: AutoclearConfig) -> None:
+    """Run autoclear once."""
     clear_terminal(config)
     logger.success("Terminal cleared")
 
@@ -174,6 +183,7 @@ def run_autoclear(config: AutoclearConfig) -> None:
 
    
 def init():
+    """Initialize the runtime environment for this module."""
     LOG_FILE = _setup_env()
     _setup_logger(LOG_FILE)
 

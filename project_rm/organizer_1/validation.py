@@ -1,3 +1,9 @@
+"""Validation and parsing layer for organizer.
+
+These functions turn raw paths/options into trusted domain inputs and collect
+structured validation errors instead of crashing early.
+"""
+
 import os
 import time
 from functools import partial
@@ -11,6 +17,9 @@ except ImportError:
 
 # REUSABLE: existence validation is generic and portable across projects.
 def validate_path_exists(path: Path) -> Validated[Path]:
+    # Return a structured validation result instead of raising immediately.
+    # That lets higher layers accumulate/report multiple errors cleanly.
+    """Validate path exists."""
     if not path.exists():
         return Validated(None, [ValidationError(f"Path does not exist: {path}")])
     return Validated(path)
@@ -18,6 +27,7 @@ def validate_path_exists(path: Path) -> Validated[Path]:
 
 # REUSABLE: directory type validation is generic and portable across projects.
 def validate_is_directory(path: Path) -> Validated[Path]:
+    """Validate is directory."""
     if not path.is_dir():
         return Validated(None, [ValidationError(f"Path is not a directory: {path}")])
     return Validated(path)
@@ -25,7 +35,10 @@ def validate_is_directory(path: Path) -> Validated[Path]:
 
 # REUSABLE: readable permission validation is generic and portable across projects.
 def validate_is_readable(path: Path) -> Validated[Path]:
+    """Validate is readable."""
     try:
+        # `next(iterdir(), None)` is a cheap permission probe:
+        # if listing the directory fails, we likely lack read access.
         next(path.iterdir(), None)
         return Validated(path)
     except PermissionError:
@@ -34,6 +47,7 @@ def validate_is_readable(path: Path) -> Validated[Path]:
 
 # REUSABLE: file type validation is generic and portable across projects.
 def validate_is_file(path: Path) -> Validated[Path]:
+    """Validate is file."""
     if not path.is_file():
         return Validated(None, [ValidationError(f"Path is not a file: {path}")])
     return Validated(path)
@@ -41,6 +55,7 @@ def validate_is_file(path: Path) -> Validated[Path]:
 
 # REUSABLE: bounded scan validation is a useful safety pattern for CLI tools.
 def validate_file_count_within_limit(directory: Path, max_files: int) -> Validated[Path]:
+    """Validate file count within limit."""
     try:
         count = 0
         for item in directory.iterdir():
@@ -55,19 +70,22 @@ def validate_file_count_within_limit(directory: Path, max_files: int) -> Validat
 
 # REUSABLE: base-directory containment check is a strong path traversal defense.
 def validate_within_base(path: Path, base_dir: Path) -> Validated[Path]:
+    """Validate within base."""
     try:
-        resolved = path.resolve()
+        resolved = path.resolve()  # collapse "..", symlinks, and relative parts into a real absolute path
         if not resolved.is_relative_to(base_dir):
             return Validated(None, [ValidationError(f"Path outside allowed area: {path}")])
         return Validated(resolved)
-    except Exception as error:
+    except (OSError, RuntimeError) as error:
         return Validated(None, [ValidationError(f"Invalid path: {error}")])
 
 
 # REUSABLE: symlink defense is a solid reusable file-system security primitive.
 def validate_not_symlinks(path: Path) -> Validated[Path]:
+    """Validate not symlinks."""
     current = path
     while current != current.parent:
+        # Walk upward one path component at a time and reject any symlink hop.
         if current.is_symlink():
             return Validated(None, [ValidationError(f"Symlink in path: {current}")])
         current = current.parent
@@ -76,10 +94,12 @@ def validate_not_symlinks(path: Path) -> Validated[Path]:
 
 # REUSABLE: write-probe validation is a reusable TOCTOU-resistant pattern.
 def validate_is_writable_secure(path: Path) -> Validated[Path]:
+    """Validate is writable secure."""
     if path.exists():
         if not path.is_dir():
             return Validated(None, [ValidationError(f"Not a directory: {path}")])
 
+        # Randomized temp file name reduces collision risk between concurrent processes.
         test_name = f".write_test_{os.getpid()}_{int(time.time())}_{os.urandom(4).hex()}"
         test_file = path / test_name
         try:
@@ -98,6 +118,9 @@ def validate_is_writable_secure(path: Path) -> Validated[Path]:
 
 
 def parse_source_directory_secure(path: Path, max_files: int = 10000) -> Validated[Path]:
+    # Bind-chain mental model:
+    # each step only runs if the previous validation succeeded.
+    """Parse source directory secure."""
     check_file_limit = partial(validate_file_count_within_limit, max_files=max_files)
     return (
         validate_within_base(path, Path.home())
@@ -109,11 +132,14 @@ def parse_source_directory_secure(path: Path, max_files: int = 10000) -> Validat
 
 
 def parse_backup_source(path: Path) -> Validated[Path]:
+    """Parse backup source."""
     return validate_path_exists(path).bind(validate_is_directory).bind(validate_is_readable)
 
 
 def parse_backup_destination(path: Path) -> Validated[Path]:
+    """Parse backup destination."""
     def parse_directory_or_creatable(candidate: Path) -> Validated[Path]:
+        """Parse directory or creatable."""
         if candidate.exists():
             return validate_is_directory(candidate)
 
@@ -132,6 +158,7 @@ def parse_backup_destination(path: Path) -> Validated[Path]:
 
 # REUSABLE: enum parsing with sanitation is a generic CLI/config pattern.
 def parse_conflict_strategy(value: str) -> Validated[ConflictStrategy]:
+    """Parse conflict strategy."""
     try:
         clean_value = value.strip().lower()
         if not clean_value.isalnum():
@@ -141,5 +168,5 @@ def parse_conflict_strategy(value: str) -> Validated[ConflictStrategy]:
     except ValueError:
         valid_options = ", ".join(strategy.value for strategy in ConflictStrategy)
         return Validated(None, [ValidationError(f"Invalid strategy '{value}'. Choose from: {valid_options}")])
-    except Exception:
+    except (AttributeError, TypeError):
         return Validated(None, [ValidationError("Invalid input")])

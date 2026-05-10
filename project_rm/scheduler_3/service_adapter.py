@@ -1,3 +1,9 @@
+"""Native service/task adapter for scheduler.
+
+Linux uses one long-running systemd service. Windows uses Task Scheduler.
+This layer knows how to install/control those native OS integrations.
+"""
+
 import getpass
 import shlex
 import subprocess
@@ -104,6 +110,7 @@ def _run_system_command(command: list[str], *, input_text: str | None = None) ->
 def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProcess[str]:
     # `systemctl --user` manages per-user units.
     # Plain `systemctl` manages system-wide units.
+    """Run systemctl."""
     base = ["systemctl"]
     if not system:
         base.append("--user")
@@ -120,6 +127,7 @@ def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) 
 
 def _is_systemd_service_enabled(*, system: bool) -> bool:
     # `enabled` means the service is configured to start automatically.
+    """Return whether systemd service enabled."""
     return _read_systemd_property(SYSTEMD_SERVICE_NAME, "UnitFileState", system=system) == "enabled"
 
 
@@ -154,6 +162,7 @@ def _install_systemd_system(service_content: str) -> Path:
 
 def _is_systemd_service_installed(*, system: bool) -> bool:
     # `loaded` means systemd can see and parse the unit file.
+    """Return whether systemd service installed."""
     return _read_systemd_property(SYSTEMD_SERVICE_NAME, "LoadState", system=system) == "loaded"
 
 

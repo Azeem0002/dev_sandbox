@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""CLI boundary for autoclear.
+
+This file translates command-line input/output into calls to the application layer.
+Keep real orchestration out of here as much as possible.
+"""
 
 import time
 
@@ -34,11 +39,13 @@ app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear cont
 # ============================================
 @app.callback()
 def init() -> None:
+    """Initialize the runtime environment for this module."""
     log_file = _setup_env()
     _setup_logger(log_file)
 
 
 def _format_autoclear_status(status: AutoclearStatus) -> str:
+    """Format autoclear status."""
     state = "running" if status.is_running else "stopped"
     parts = [f"Autoclear status: {state}", f"backend={status.backend}"]
 
@@ -58,19 +65,22 @@ def _format_autoclear_status(status: AutoclearStatus) -> str:
 
 @app.command()
 def status() -> None:
+    """Display the current status to the caller."""
     typer.echo(_format_autoclear_status(get_autoclear_status()))
 
 
 @app.command()
 def stop() -> None:
+    """Stop the requested runtime path."""
     typer.echo(stop_autoclear())
 
 
 @app.command()
 def start(interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 2h")) -> None:
+    """Start the requested runtime path."""
     try:
         result = start_autoclear(interval)
-    except (ValueError, RuntimeError) as error:
+    except (ValueError, RuntimeError, OSError) as error:
         typer.echo(f"Error: {error}")
         raise typer.Exit(code=1)
 
@@ -80,9 +90,10 @@ def start(interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 
 
 @app.command()
 def restart(interval: str = typer.Option("1h", "-i", help="New interval (e.g. 600, 2h 30m)")) -> None:
+    """Restart the requested runtime path."""
     try:
         result = restart_autoclear(interval)
-    except (ValueError, RuntimeError) as error:
+    except (ValueError, RuntimeError, OSError) as error:
         typer.echo(f"Error: {error}")
         raise typer.Exit(code=1)
 
@@ -95,6 +106,7 @@ def install_service(
     interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 2h"),
     system: bool = typer.Option(False, "--system", help="Install as system-level service on Linux"),
 ) -> None:
+    """Install service."""
     try:
         message, steps = install_autoclear_service(interval=interval, system=system)
     except (ValueError, RuntimeError) as error:
@@ -107,6 +119,7 @@ def install_service(
 
 
 def main() -> None:
+    """Run the module entrypoint."""
     app()
 
 

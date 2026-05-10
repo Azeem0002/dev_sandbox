@@ -1,3 +1,9 @@
+"""Application/orchestration layer for organizer.
+
+The CLI boundary sends validated requests here. This layer coordinates
+the concrete organize/analyze/backup use-cases without owning low-level I/O.
+"""
+
 from pathlib import Path
 
 try:
@@ -16,6 +22,8 @@ except ImportError:
 # ============================================
 def run_organize(input_data: OrganizeFilesInput):
     """
+    Run the main organize use-case with an already-validated organize input model.
+
     Flow:
         organize -> run_organize
         run_organize
@@ -27,6 +35,8 @@ def run_organize(input_data: OrganizeFilesInput):
 
 def run_analyze(source_dir: Path, max_files: int):
     """
+    Run the read-only analysis use-case without mutating the source directory.
+
     Flow:
         analyze -> run_analyze
         run_analyze
@@ -38,6 +48,8 @@ def run_analyze(source_dir: Path, max_files: int):
 
 def run_backup(input_data: BackupCommandInput):
     """
+    Run the backup use-case with an already-validated backup input model.
+
     Flow:
         backup -> run_backup
         run_backup
@@ -49,6 +61,8 @@ def run_backup(input_data: BackupCommandInput):
 
 def list_backups(backup_dir: Path) -> list[Path]:
     """
+    Return raw backup paths for the CLI to format and present.
+
     Flow:
         backup --list -> list_backups
         list_backups
@@ -60,6 +74,8 @@ def list_backups(backup_dir: Path) -> list[Path]:
 
 def run_restore(backup_path: Path, restore_dir: Path, backup_dir: Path) -> bool:
     """
+    Restore one backup archive into the requested destination directory.
+
     Flow:
         backup --restore -> run_restore
         run_restore

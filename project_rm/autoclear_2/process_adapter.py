@@ -1,3 +1,9 @@
+"""Detached-process adapter for autoclear.
+
+This module owns PID files, worker-process discovery, spawning, and stopping.
+It hides OS/process details behind a stable app-facing adapter surface.
+"""
+
 import subprocess
 import sys
 import time
@@ -7,9 +13,9 @@ import psutil
 from loguru import logger
 
 try:
-    from .runtime_support import get_platform_dirs, get_worker_script_path
+    from .runtime_support import get_platform_dirs
 except ImportError:
-    from runtime_support import get_platform_dirs, get_worker_script_path
+    from runtime_support import get_platform_dirs
 
 
 # ============================================
@@ -20,18 +26,20 @@ except ImportError:
 # Shared private skeleton - start reading here
 # ============================================
 def _get_pid_file_path() -> Path:
+    # `platformdirs` gives the app-owned data directory for the current OS/user.
+    """Return the app-owned PID file location for the autoclear worker process."""
     data_dir = Path(get_platform_dirs().user_data_dir)
-    try:
-        data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        return data_dir / "autoclear.pid"
-    except OSError as error:
-        raise PermissionError("Failed to create directory") from error
+    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return data_dir / "autoclear.pid"
 
 
 def _read_pid_file(*, warn_on_invalid: bool = True) -> int | None:
+    """Read the stored autoclear PID, returning `None` when the file is missing or invalid."""
     pid_file = _get_pid_file_path()
     try:
+        # read_text(...).strip(): read file contents as text and remove whitespace/newline.
         raw_pid = pid_file.read_text(encoding="utf-8").strip()
+        # int("1234") -> 1234. Raises ValueError if the file contains junk.
         return int(raw_pid)
     except FileNotFoundError:
         return None
@@ -43,7 +51,9 @@ def _read_pid_file(*, warn_on_invalid: bool = True) -> int | None:
 
 
 def _get_process(pid: int) -> psutil.Process | None:
+    """Return a live process handle for `pid`, or `None` if it no longer represents a usable process."""
     try:
+        # psutil.Process(pid): lightweight handle for querying/managing a running OS process.
         process = psutil.Process(pid)
         if not process.is_running():
             return None
@@ -55,38 +65,39 @@ def _get_process(pid: int) -> psutil.Process | None:
 
 
 def _is_managed_process(process: psutil.Process) -> bool:
+    """Return whether this OS process is the autoclear worker managed by this project."""
     try:
         cmdline = process.cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return False
 
-    script_path = str(get_worker_script_path())
+    script_path = str(Path(__file__).with_name("autoclear.py").resolve())  # absolute path to our worker script
     return any(part == script_path or part.endswith("autoclear.py") for part in cmdline)
 
 
 def _write_pid_file(pid: int) -> None:
+    """Persist the worker PID so later commands can find and manage the running process."""
     pid_file = _get_pid_file_path()
     logger.debug(f"Writing PID {pid} to {pid_file}")
-    try:
-        pid_file.write_text(str(pid), encoding="utf-8")
-    except OSError as error:
-        raise RuntimeError(f"Failed to write to pid file: {pid_file}") from error
+    # PID file = small text file that records "which process currently owns this app".
+    pid_file.write_text(str(pid), encoding="utf-8")
 
 
 def _remove_pid_file() -> None:
+    """Delete the PID file to prevent stale worker pointers after shutdown/crashes."""
     pid_file = _get_pid_file_path()
-    try:
-        pid_file.unlink(missing_ok=True)
-    except OSError as error:
-        logger.debug(f"Failed to delete pid file: {pid_file}")
-        raise PermissionError(f"Failed to delete pid file: {pid_file}") from error
+    pid_file.unlink(missing_ok=True)
 
 
 def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
+    """Return the active autoclear PID only when the PID file points to a real managed worker."""
     pid = _read_pid_file(warn_on_invalid=warn_on_invalid)
     if pid is None:
         return None
 
+    # Two-step check:
+    # 1. does a process with this PID still exist?
+    # 2. is it actually *our* autoclear worker, not some unrelated reused PID?
     process = _get_process(pid)
     if process is not None and _is_managed_process(process):
         return process.pid
@@ -94,21 +105,27 @@ def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
     logger.warning(f"Removing stale PID file for invalid autoclear process {pid}")
     try:
         _remove_pid_file()
-    except PermissionError as error:
+    except OSError as error:
         logger.warning(str(error))
     return None
 
 
 def _spawn_detached_process(interval_secs: int) -> int:
+    """Launch the autoclear worker in the background and wait until startup becomes observable."""
     existing_pid = _get_active_process_pid()
     if existing_pid is not None:
         raise RuntimeError(f"Autoclear is already running (PID {existing_pid})")
 
+    # Return the standalone worker entrypoint that detached processes and services must launch.
+    script_path = Path(__file__).with_name("autoclear.py").resolve()
+    
     process = subprocess.Popen(
-        [sys.executable, str(get_worker_script_path()), str(interval_secs)],
+        [sys.executable, str(script_path), str(interval_secs)],
+        # DEVNULL: child inherits no usable stdin/stdout/stderr from this terminal.
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
+        # start_new_session=True: detach child from the current terminal/session.
         start_new_session=True,
         close_fds=True,  # "Close all file descriptors before running the child process."
     )
@@ -132,17 +149,20 @@ def _spawn_detached_process(interval_secs: int) -> int:
 
 
 def _read_interval_from_process(process: psutil.Process) -> int | None:
+    """Recover the worker's configured interval from its command line when possible."""
     try:
         cmdline = process.cmdline()
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return None
 
+    # We encode the interval as the last CLI argument, so reading it back is just cmdline[-1].
     if cmdline and cmdline[-1].isdigit():
         return int(cmdline[-1])
     return None
 
 
 def _stop_process(wait: bool = True) -> bool:
+    """Stop the running autoclear worker and optionally wait for it to exit cleanly."""
     active_pid = _get_active_process_pid()
     if active_pid is None:
         logger.info("Autoclear is not running")
@@ -150,6 +170,7 @@ def _stop_process(wait: bool = True) -> bool:
 
     try:
         process = psutil.Process(active_pid)
+        # terminate() asks nicely (SIGTERM on Unix). kill() is the hard fallback.
         process.terminate()
     except psutil.NoSuchProcess:
         _remove_pid_file()
@@ -177,48 +198,52 @@ def _stop_process(wait: bool = True) -> bool:
 # Public adapter API - stable reusable surface
 # ============================================
 def get_pid_file_path() -> Path:
+    """Public wrapper for the autoclear PID file location."""
     return _get_pid_file_path()
 
 
 def read_pid_file(*, warn_on_invalid: bool = True) -> int | None:
+    """Public wrapper for reading the stored autoclear PID."""
     return _read_pid_file(warn_on_invalid=warn_on_invalid)
 
 
 def get_process(pid: int) -> psutil.Process | None:
+    """Public wrapper for resolving a live process handle from a PID."""
     return _get_process(pid)
 
 
 def is_managed_process(process: psutil.Process) -> bool:
+    """Public wrapper for checking whether a process belongs to this autoclear app."""
     return _is_managed_process(process)
 
 
 def write_pid_file(pid: int) -> None:
+    """Public wrapper for persisting the autoclear PID file."""
     _write_pid_file(pid)
 
 
 def remove_pid_file() -> None:
+    """Public wrapper for deleting the autoclear PID file."""
     _remove_pid_file()
 
 
 def get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
+    """Public wrapper for resolving the currently running autoclear PID."""
     return _get_active_process_pid(warn_on_invalid=warn_on_invalid)
 
 
 def spawn_detached_process(*, interval_secs: int | None = None) -> int:
+    """Public wrapper for detached startup using the shared cross-project adapter signature."""
     if interval_secs is None:
         raise ValueError("interval_secs is required for autoclear background process")
     return _spawn_detached_process(interval_secs)
 
 
 def read_process_interval_seconds(process: psutil.Process) -> int | None:
+    """Public wrapper for reading the interval encoded into the autoclear worker process."""
     return _read_interval_from_process(process)
 
 
 def stop_process(wait: bool = True) -> bool:
+    """Public wrapper for stopping the autoclear background worker."""
     return _stop_process(wait=wait)
-
-
-_is_autoclear_process = _is_managed_process
-_get_active_autoclear_pid = _get_active_process_pid
-_spawn_detached_autoclear = _spawn_detached_process
-stop_autoclear_process = _stop_process

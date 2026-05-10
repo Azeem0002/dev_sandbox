@@ -1,4 +1,9 @@
 from __future__ import annotations
+"""Core data models and shared config for organizer.
+
+This module defines the stable domain vocabulary used across validation,
+application, and service layers.
+"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -14,18 +19,22 @@ class ValidationError(Exception):
 
 @dataclass
 class Validated[T]:
+    """Validation result object that carries either a value or accumulated errors."""
     value: T | None = None
     errors: list[ValidationError] = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:
+        """Return whether valid."""
         return self.value is not None and not self.errors
 
     @property
     def is_invalid(self) -> bool:
+        """Return whether invalid."""
         return not self.is_valid
 
     def get_or_raise(self) -> T:
+        """Return or raise."""
         if self.is_invalid:
             error_msg = str(self.errors[0]) if self.errors else "Invalid value"
             raise ValidationError(error_msg)
@@ -34,6 +43,7 @@ class Validated[T]:
         return self.value
 
     def map[U](self, op) -> Validated[U]:
+        """Map."""
         if self.is_invalid:
             return Validated(None, self.errors.copy())
 
@@ -41,6 +51,7 @@ class Validated[T]:
         return Validated(op(self.value), self.errors.copy())
 
     def bind[U](self, op) -> Validated[U]:
+        """Bind."""
         if self.is_invalid:
             return Validated(None, self.errors.copy())
 
@@ -49,6 +60,7 @@ class Validated[T]:
         return Validated(result.value, self.errors + result.errors.copy())
 
     def __and__[U](self, other: Validated[U]) -> Validated[tuple[T, U]]:
+        """And."""
         if self.is_valid and other.is_valid:
             assert self.value is not None
             assert other.value is not None
@@ -59,6 +71,7 @@ class Validated[T]:
 
 @dataclass(frozen=True)
 class AppConfig:
+    """Static app-level configuration values shared by organizer modules."""
     app_name: str = "organizer"
     app_author: str = "Al-Azeem"
     max_files: int = 10000
@@ -131,6 +144,7 @@ class DirectoryAnalysis:
 
     @property
     def categories(self) -> list[str]:
+        """Categories."""
         return sorted(self.category_counts)
 
 

@@ -1,3 +1,9 @@
+"""Application/orchestration layer for autoclear.
+
+Boundary code calls this module with already-parsed inputs.
+This layer chooses the right backend and coordinates process/service adapters.
+"""
+
 from pathlib import Path
 
 import pytimeparse
@@ -39,9 +45,9 @@ except ImportError:
 
 
 def _parse_interval(value: str) -> int:
-    """Convert user-friendly input like `10s`, `5m`, or `3600` into seconds."""
+    """Convert flexible user input like `10s`, `5m`, or `3600` into a bounded integer interval in seconds."""
     if value.isdigit():
-        seconds = int(value)
+        seconds = int(value)  # already plain seconds
     else:
         parsed = pytimeparse.parse(value)
         if parsed is None:
@@ -56,7 +62,7 @@ def _parse_interval(value: str) -> int:
 
 
 def _build_process_stopped_status(detail: str, pid_file: Path) -> AutoclearStatus:
-    """Translate raw process facts into the app-facing 'stopped' status model."""
+    """Build the public status model for the 'autoclear process backend is not running' case."""
     return AutoclearStatus(
         backend="process",
         is_running=False,
@@ -69,8 +75,9 @@ def _build_process_stopped_status(detail: str, pid_file: Path) -> AutoclearStatu
 
 
 def _build_process_running_status(pid: int, pid_file: Path) -> AutoclearStatus:
-    """Translate raw process facts into the app-facing 'running' status model."""
+    """Build the public status model for the 'autoclear process backend is alive' case."""
     process = get_process(pid)
+    # Process adapter knows how the worker encodes its interval in CLI args.
     interval = read_process_interval_seconds(process) if process is not None else None
     return AutoclearStatus(
         backend="process",
@@ -84,7 +91,7 @@ def _build_process_running_status(pid: int, pid_file: Path) -> AutoclearStatus:
 
 
 def _status_from_process() -> AutoclearStatus:
-    """Read status from the detached worker-process backend."""
+    """Derive status from the detached worker-process backend when no system service owns execution."""
     pid_file = get_pid_file_path()
     active_pid = get_active_process_pid(warn_on_invalid=False)
     if active_pid is None:
@@ -94,6 +101,8 @@ def _status_from_process() -> AutoclearStatus:
 
 def install_autoclear_service(interval: str = "1h", system: bool = False) -> tuple[str, list[str]]:
     """
+    Install the native background backend for this platform after parsing the human interval input.
+
     Flow:
         install-service -> install_autoclear_service
         install_autoclear_service
@@ -123,6 +132,8 @@ def install_autoclear_service(interval: str = "1h", system: bool = False) -> tup
 # ============================================
 def get_autoclear_status() -> AutoclearStatus:
     """
+    Return status from the preferred backend: systemd timer on Linux, detached worker elsewhere.
+
     Flow:
         status -> get_autoclear_status
         get_autoclear_status
@@ -141,6 +152,8 @@ def get_autoclear_status() -> AutoclearStatus:
 
 def start_autoclear(interval: str) -> str:
     """
+    Start autoclear using the backend that makes sense for the current platform.
+
     Flow:
         start -> start_autoclear
         start_autoclear
@@ -161,6 +174,8 @@ def start_autoclear(interval: str) -> str:
 
 def stop_autoclear() -> str:
     """
+    Stop autoclear through the same backend-selection rules used for start/status.
+
     Flow:
         stop -> stop_autoclear
         stop_autoclear
@@ -183,6 +198,8 @@ def stop_autoclear() -> str:
 
 def restart_autoclear(interval: str) -> str:
     """
+    Stop the current autoclear backend and start it again with the requested interval.
+
     Flow:
         restart -> restart_autoclear
         restart_autoclear

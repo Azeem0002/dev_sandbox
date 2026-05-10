@@ -1,4 +1,3 @@
-Hermes agent
 
 """
  Automated Patterns. Here's what you should NOT manually code:
@@ -60,31 +59,89 @@ CREATE, TABLE, INDEX, PRIMARY, KEY, NOT, NULL,
 DEFAULT, UNIQUE, TEXT, INTEGER, ORDER, BY, 
 ASC, DESC, AND, OR, IN, LIKE, BETWEEN
 
-# SQLite Database
-- config/path helpers
-- connection helper
-- init schema
-- insert row(s)
-- fetch one by id/name
-- fetch many/list
-- update row(s)
-- delete row(s)
-- exists check
-- count row(s)
-- aggregate counts/status summaries
-- transaction helper when a use case spans multiple writes
-- maintenance helpers only when the app truly needs them
+# Reusable Adapter Checklist
 
-# process adapter
-- get platform dir
-- get pid file path
-- read pid file
-- is program process
-- get process
-- write pid file
-- remove pid file
-- get active program pid
-- spawn detached program
-- stop program process
-- check program status
-- restart program
++----------------------+------------------------------------------------------------------+
+| Adapter              | 90-99% function order / responsibilities                         |
++----------------------+------------------------------------------------------------------+
+| SQLite DB adapter    | get platform dir -> connection helper -> normalize/serialize  |
+|                      | values for storage -> init schema -> cleanup/repair helpers      |
+|                      | -> insert row(s) -> fetch one by id/name -> fetch many/list      |
+|                      | -> update row(s) -> delete one row -> delete many rows           |
+|                      | -> exists check -> count row(s) -> aggregate counts/status       |
+|                      | summaries -> transaction helper when a use case spans multiple   |
+|                      | writes -> maintenance helpers only when the app truly needs them |
++----------------------+------------------------------------------------------------------+
+| Process adapter      | get platform dir -> get pid file path -> read pid file           |
+|                      | -> get live process handle -> verify this is our managed         |
+|                      | process -> write pid file -> remove pid file                     |
+|                      | -> resolve active program pid -> spawn detached program          |
+|                      | -> poll for startup proof / crash detection                      |
+|                      | -> read interval/status hints from process if the app needs it   |
+|                      | -> stop program process -> best-effort stale-pid cleanup         |
++----------------------+------------------------------------------------------------------+
+| Runtime/env adapter  | get platform dirs -> read env overrides -> detect dev/prod env   |
+|                      | -> resolve local timezone -> prepare runtime directories/files   |
+|                      | -> return important runtime paths (logs, worker scripts, etc.)   |
+|                      | -> configure logger                                              |
++----------------------+------------------------------------------------------------------+
+| Platform adapter     | detect raw host platform -> normalize platform name to app       |
+|                      | vocabulary -> expose one stable small set of platform names      |
++----------------------+------------------------------------------------------------------+
+| Service adapter      | define service/task/timer names -> build service/task/timer      |
+|                      | command text -> run OS command helper -> reload backend if       |
+|                      | needed -> read service properties/status                         |
+|                      | -> install service -> installed/enabled checks                   |
+|                      | -> start service -> stop service                                 |
++----------------------+------------------------------------------------------------------+
+
+
+# Exception Policy
+
+### Use These By Default
+===============================================================================
+- `ValueError`
+  - bad user input
+  - malformed CLI/API/config values
+  - wrong option combinations
+
+- `ValidationError`
+  - domain/business validation failed
+  - input was structurally valid enough to parse, but not valid for the use case
+  - example: unsafe path, invalid backup target, conflicting resume state
+
+- `OSError`
+  - filesystem / process / OS failure
+  - path creation, file read/write, unlink, permission denied, disk full, missing file
+  - keep this native inside low-level OS/file adapters when possible
+
+- `RuntimeError`
+  - operation failed at app/adapter level after making a higher-level decision
+  - service install/start/stop failed
+  - detached child failed to prove startup
+  - unsupported platform for a supported app operation
+
+
+### Layer Rule
+===============================================================================
+- boundary / CLI
+  - catch and present user-friendly output
+
+- validation / parsing
+  - prefer `ValueError` or `ValidationError`
+
+- application / orchestration
+  - translate only when it adds business/app meaning
+  - do not wrap unexpected errors just to rename them
+
+- low-level adapters
+  - preserve native low-level exceptions when they are already meaningful
+  - example: keep `OSError` for filesystem/process operations
+
+
+### Quick Rule of Thumb
+===============================================================================
+- bad input -> `ValueError`
+- business rule failed -> `ValidationError`
+- OS/file/process failed -> `OSError`
+- higher-level operation failed -> `RuntimeError`

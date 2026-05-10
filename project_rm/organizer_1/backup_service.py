@@ -1,3 +1,9 @@
+"""Backup use-cases for organizer.
+
+This module owns safe copy, compression, restore, and backup-oriented recovery
+rules. It is service-layer code, not just low-level file utilities.
+"""
+
 import shutil
 import sys
 import tarfile
@@ -21,6 +27,7 @@ except ImportError:
 
 
 def _get_validated_value[T](validation: Validated[T], context: str = "") -> T:
+    """Return validated value."""
     if validation.is_invalid:
         error_text = ", ".join(str(error) for error in validation.errors) or "invalid value"
         raise ValidationError(f"{context or 'Validation'} failed: {error_text}")
@@ -169,11 +176,12 @@ def check_copy_safety(total_items: int, start: datetime) -> None:
 
 
 def _copy_one_file(item: Path, src_dir: Path, dst_dir: Path, stats: dict[str, int]) -> None:
+    """Copy one file."""
     try:
         bytes_copied = copy_single_file_secure(item, src_dir, dst_dir)
         stats["copied"] += 1
         stats["bytes"] += bytes_copied
-    except Exception as error:
+    except (OSError, RuntimeError, ValidationError) as error:
         logger.warning(f"Failed to copy {item.name}: {error}")
         stats["skipped"] += 1
     finally:
@@ -181,6 +189,7 @@ def _copy_one_file(item: Path, src_dir: Path, dst_dir: Path, stats: dict[str, in
 
 
 def _handle_interrupt(start: datetime, stats: dict[str, int]) -> None:
+    """Handle interrupt."""
     elapsed = (datetime.now() - start).total_seconds()
     logger.warning(
         f"\nCopy interrupted after {elapsed:.1f}s\n"
@@ -190,11 +199,13 @@ def _handle_interrupt(start: datetime, stats: dict[str, int]) -> None:
 
 
 def _handle_error(start: datetime, error: Exception) -> None:
+    """Handle error."""
     elapsed = (datetime.now() - start).total_seconds()
     logger.error(f"Copy failed after {elapsed:.1f}s: {error}")
 
 
 def report_copy_results(start: datetime, stats: dict[str, int], src_dir: Path, dst_dir: Path) -> None:
+    """Report copy results."""
     elapsed = (datetime.now() - start).total_seconds()
     gb = stats["bytes"] / (1024 * 1024 * 1024)
     rate = stats["copied"] / elapsed if elapsed > 0 else 0
@@ -220,6 +231,7 @@ def with_logging(func):
     """Decorator that logs start/success/failure around one backup step."""
     @wraps(func)
     def wrapper(*args, **kwargs):
+        """Wrapper."""
         logger.debug(f"Starting {func.__name__}")
         try:
             result = func(*args, **kwargs)
@@ -235,8 +247,10 @@ def with_logging(func):
 def with_retry(max_attempts: int = 3):
     """Decorator factory for retrying transient backup failures."""
     def decorator(func):
+        """Wrap one function with bounded retry behavior."""
         @wraps(func)
         def wrapper(*args, **kwargs):
+            """Wrapper."""
             last_exception = None
             for attempt in range(max_attempts):
                 try:
@@ -261,6 +275,7 @@ class DiskSpaceManager:
         destination_dir: Path,
         estimate_only: bool = False,
     ) -> tuple[bool, str | None, int | None]:
+        """Check space for backup."""
         try:
             source_size = (
                 cls._estimate_source_size_fast(source_dir)
@@ -299,12 +314,13 @@ class DiskSpaceManager:
                 ), source_size
 
             return True, None, source_size
-        except Exception as error:
+        except RuntimeError as error:
             logger.error(f"Disk space check failed: {error}")
             return True, None, None
 
     @staticmethod
     def _estimate_source_size_fast(source_dir: Path) -> int:
+        """Estimate source size fast."""
         total = 0
         sample_count = 0
         for item in source_dir.rglob("*"):
@@ -322,6 +338,7 @@ class DiskSpaceManager:
 
     @staticmethod
     def _calculate_source_size_accurate(source_dir: Path) -> int:
+        """Calculate source size accurate."""
         total = 0
         file_count = 0
         for item in source_dir.rglob("*"):
@@ -343,6 +360,7 @@ class DiskSpaceManager:
         copied_so_far: int,
         next_file_size: int,
     ) -> tuple[bool, str | None]:
+        """Monitor copy progress."""
         del copied_so_far
         try:
             dst_usage = shutil.disk_usage(destination_dir)
@@ -365,6 +383,7 @@ MAX_BACKUP_FILES = 1_000_000
 
 
 def _copy_backup_directory_with_space_monitoring(src_dir: Path, dst_dir: Path) -> int:
+    """Copy backup directory with space monitoring."""
     dest_validation = parse_backup_destination(dst_dir)
     if dest_validation.is_invalid:
         errors = "\n".join(str(error) for error in dest_validation.errors)
@@ -411,7 +430,7 @@ def _copy_backup_directory_with_space_monitoring(src_dir: Path, dst_dir: Path) -
 
         try:
             bytes_copied = copy_single_file_secure(file_path, src_dir, dst_dir)
-        except Exception as error:
+        except (OSError, RuntimeError, ValidationError) as error:
             logger.warning(f"Failed to copy {file_path.name}: {error}")
             continue
 
@@ -422,13 +441,14 @@ def _copy_backup_directory_with_space_monitoring(src_dir: Path, dst_dir: Path) -
 
 
 def compress_to_zip(source_dir: Path, archive_path: Path) -> bool:
+    """Compress to zip."""
     try:
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zip_file:
             for file_path in source_dir.rglob("*"):
                 if file_path.is_file():
                     zip_file.write(file_path, file_path.relative_to(source_dir))
         return True
-    except Exception as error:
+    except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         logger.error(f"ZIP compression failed: {error}")
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
@@ -436,11 +456,12 @@ def compress_to_zip(source_dir: Path, archive_path: Path) -> bool:
 
 
 def compress_to_tar_gz(source_dir: Path, archive_path: Path) -> bool:
+    """Compress to tar gz."""
     try:
         with tarfile.open(archive_path, "w:gz") as tar_file:
             tar_file.add(source_dir, arcname=source_dir.name)
         return True
-    except Exception as error:
+    except (OSError, tarfile.TarError, RuntimeError) as error:
         logger.error(f"TAR.GZ compression failed: {error}")
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
@@ -448,6 +469,7 @@ def compress_to_tar_gz(source_dir: Path, archive_path: Path) -> bool:
 
 
 def _compress_backup_directory(backup_dir: Path, compression_format: str) -> Path | None:
+    """Compress backup directory."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         if compression_format == "zip":
@@ -457,37 +479,40 @@ def _compress_backup_directory(backup_dir: Path, compression_format: str) -> Pat
             archive_path = generate_unique_filename(backup_dir.parent / f"{backup_dir.name}_{timestamp}.tar.gz")
             return archive_path if compress_to_tar_gz(backup_dir, archive_path) else None
         raise ValidationError(f"Unsupported compression format: {compression_format}")
-    except Exception as error:
+    except (ValidationError, RuntimeError, OSError) as error:
         logger.error(f"Compression failed: {error}")
         return None
 
 
 def _cleanup_failed_backup(backup_path: Path) -> None:
+    """Cleanup failed backup."""
     if not backup_path.exists():
         return
     try:
         logger.debug(f"Cleaning up failed backup: {backup_path}")
         shutil.rmtree(backup_path, ignore_errors=True)
-    except Exception as error:
+    except OSError as error:
         logger.warning(f"Could not clean up backup directory {backup_path}: {error}")
 
 
 def _extract_zip_archive(archive_path: Path, extract_dir: Path) -> bool:
+    """Extract zip archive."""
     try:
         with zipfile.ZipFile(archive_path, "r") as zip_file:
             zip_file.extractall(extract_dir)
         return True
-    except Exception as error:
+    except (OSError, zipfile.BadZipFile, RuntimeError) as error:
         logger.error(f"ZIP extraction failed: {error}")
         return False
 
 
 def _extract_tar_gz_archive(archive_path: Path, extract_dir: Path) -> bool:
+    """Extract tar gz archive."""
     try:
         with tarfile.open(archive_path, "r:gz") as tar_file:
             tar_file.extractall(extract_dir)
         return True
-    except Exception as error:
+    except (OSError, tarfile.TarError, RuntimeError) as error:
         logger.error(f"TAR.GZ extraction failed: {error}")
         return False
 
@@ -540,7 +565,7 @@ def create_backup(input_data: BackupCommandInput) -> Path | None:
                 return archive_path
 
         return backup_path
-    except Exception as error:
+    except (ValidationError, RuntimeError, OSError) as error:
         logger.error(f"Backup failed: {error}")
         _cleanup_failed_backup(backup_path)
         return None
@@ -600,8 +625,9 @@ def restore_backup(backup_path: Path, restore_dir: Path, backup_dir: Path) -> bo
 
         logger.error(f"Unsupported backup format: {backup_path}")
         return False
-    except Exception as error:
+    except (ValidationError, RuntimeError, OSError) as error:
         logger.error(f"Restore failed: {error}")
         return False
 def _backup_modified_time(path: Path) -> float:
+    """Backup modified time."""
     return path.stat().st_mtime

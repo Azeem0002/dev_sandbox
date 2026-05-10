@@ -1,3 +1,9 @@
+"""Organization use-cases for organizer.
+
+This module owns analysis, move decisions, conflict handling, and resume-state
+checkpointing for long-running organize operations.
+"""
+
 import json
 import shutil
 from datetime import datetime
@@ -91,16 +97,19 @@ def _clear_organize_state() -> None:
 
 
 def _get_file_iterator(source_dir: Path, recursive: bool) -> Iterator[Path]:
+    """Return file iterator."""
     if recursive:
         return (item for item in source_dir.rglob("*") if item.is_file())
     return (item for item in source_dir.iterdir() if item.is_file())
 
 
 def _collect_files_for_organization(source_dir: Path, recursive: bool, max_files: int) -> list[Path]:
+    """Collect files for organization."""
     return list(_get_file_iterator(source_dir, recursive))[:max_files]
 
 
 def _resolve_target_path(target_path: Path, strategy: ConflictStrategy) -> Path | None:
+    """Resolve target path."""
     if strategy is ConflictStrategy.SKIP:
         return None
     if strategy is ConflictStrategy.RENAME:
@@ -164,6 +173,7 @@ def _mark_file_completed(
 
 
 def _log_organize_results(result: OrganizationResult, dry_run: bool) -> None:
+    """Log organize results."""
     mode = "DRY RUN" if dry_run else "COMPLETE"
     logger.success(
         f"{mode}: {result.organized} organized, "
@@ -306,7 +316,7 @@ def organize_files(input_data: OrganizeFilesInput) -> OrganizationResult:
                 except ValidationError as error:
                     logger.error(f"Validation failed for {file_path.name}: {error}")
                     result.errors += 1
-                except Exception as error:
+                except (OSError, RuntimeError) as error:
                     logger.error(f"Failed to process {file_path.name}: {error}")
                     result.errors += 1
 

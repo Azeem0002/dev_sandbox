@@ -1,3 +1,9 @@
+"""Reusable file-oriented helpers for organizer.
+
+These are lower-level primitives such as category detection, metadata gathering,
+and unique target-name generation.
+"""
+
 import re
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +20,7 @@ def extract_file_category(
     *,
     custom_mapping: dict[str, str] | None = None,
 ) -> str:
+    """Extract file category."""
     if custom_mapping is None:
         custom_mapping = {}
 
@@ -81,6 +88,7 @@ def extract_file_category(
 
 # REUSABLE: metadata gathering is a cross-project helper for file workflows.
 def gather_file_metadata(file_path: Path) -> FileInfo:
+    """Gather file metadata."""
     if not file_path.is_file():
         raise ValidationError(f"Not a file: {file_path}")
 
@@ -104,6 +112,7 @@ def gather_file_metadata(file_path: Path) -> FileInfo:
 
 # REUSABLE: collision-safe filename generation is broadly reusable.
 def generate_unique_filename(target_path: Path, max_attempts: int = 1000) -> Path:
+    """Generate unique filename."""
     counter = 1
     parent = target_path.parent
     stem = target_path.stem

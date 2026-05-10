@@ -27,67 +27,54 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. this mean parse datetime to str and str to datetime correct?
-return datetime.fromisoformat(value.strip()).isoformat()
-2. explain this:
-days_names[d-1] for d in job.days_of_week
-3. rather than if not foreground, else would have been better correct?
-if foreground:
-            if os.name == 'nt':
-                typer.echo("Starting scheduler (Windows mode)...")
-            else:
-                typer.echo("Starting scheduler (Ctrl+C to stop)...")
+1. which is better between this:
+def _is_managed_process(proc: psutil.Process)-> bool:
+    try:
+        cmdline = proc.cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+    
+    script_path = Path(__file__).with_name("scheduler.py").resolve()
+    return any(part == script_path or part.endswith("scheduler.py") for part in cmdline)
+and this and why:
+def _is_managed_process(proc: psutil.Process)-> bool:
+    try:
+        cmdline = proc.cmdline()
 
-        message = start_scheduler(foreground=foreground)
-        if not foreground:
-            typer.echo(f"✓ {message}")
-            scheduler_status = get_scheduler_status()
-            typer.echo(
-                f"Jobs: {scheduler_status.total_jobs} total | "
-                f"{scheduler_status.active_jobs} active | "
-                f"{scheduler_status.paused_jobs} paused"
-            )
-* else gave me message is unbound error or indentation error if i backspace message unlesss i define it before try. which solution is more pythonic or recommended?
-4.  
+        script_path = Path(__file__).with_name("scheduler.py").resolve()
+        return any(part == script_path or part.endswith("scheduler.py") for part in cmdline)
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+2. explain again in a much more simpler terms and analogy why this func isn't having return
+* it makes understanding how function works confusing
+def _write_pid_file(pid: int)-> None:
+    pid_file = _get_pid_file_path()
+    logger.debug(f"writing {pid} to {pid_file}")
+    pid_file.write_text(str(pid) ,encoding="utf-8")
+3. raise and return can overlap sometimes when exiting the entire program correct?
+e.g here, we can also return runtimerrror as false
+def _stop_process()-> bool:
+    active_process =_get_active_process_pid()
+    if active_process is None:
+        logger.info("Scheduler is not running")
+        return False
 
-
-
-
-
-
+4. in this block, are we waiting to kill or waiting to remove id file?
+xcept psutil.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+            _remove_pid_file()
+            return True
+5. can normalize function name also be renamed as validation?
+6. translate what this is saying:
+"resolved module-level path"
+7. 
 
 # Solve the root problem not symptoms:
 
-1. there's something wrong here:
-b name: : 
-Job name: : 
-Job name: : 
-Job name: : 
-Job name: : 
-Job name: : 
-Job name: : 
-Job name: : 
-empty name is supposed to give a warning name or either of the prompt cannot be emmpty to try again. i tracked it but could't find the root cause
-* why are we having multiple : : and where is it coming from
-2. duplicated user messages: 
-Must be 'once' or 'weekly' Must be 'once' or 'weekly'
-* should we remove err_prefix or rename it?
-3. i think these two functions are redundant:
-_format_scheduled_time(job) and _format_next_run_local(job)
-* if yes, use next run that shows WAT and remove the other
-4. the difference between these left and right arg usually confuse me
-(foreground=foreground) 
-* the right is usually the parameter in all cases while the left is what?
-* or is there a way to differentiate them that's less confusing? if yes and recommended make changes across all projects else leave as is but explain
-5. should't all public functions be in application.py? 
-* if yes and recommended fix across all projects and if no explain why? 
-* if yes, should the entry point rightly be in application.py or scheduler.py? decide the recommended version
-6. spawn detached program function in scheduler and autoclear are a little but different, and stop program process and read interval from process. is there a reason or it's a mistake from our end?
-* if it's a mistake from your end, fix it. i don't want my mental model conflicting each other. also check across all projects in project_rm with 100% accuracy syntax for syntax unless it's not possible and explain to me why not
-7. also service adapter for scheduler are different, i don't think you understand the reusables my mental model is aiming for
-* i want a reusable adapter with same function name that works across all projects. so that i can memorize and use it as my universal adapter when starting a new project and also that i don't have to worry about it cause i know it's correct and i only have to focus on the internals. how hard is that to understand?
-* again, make all adapters have same name and function names and architecture across all three projects if that project needs the adapter
-
+1. is there a reason why database_adapter has ony one public adapter api or is it an error?
+* notes and database reusable adapter don't match, what would be recommended and why for a reusable mental model across multiple projects?
+2. 
 
 
 

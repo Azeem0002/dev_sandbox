@@ -1,3 +1,9 @@
+"""Application/orchestration layer for scheduler.
+
+The CLI boundary sends validated requests here. This layer coordinates
+job use-cases, process status, and scheduler lifecycle decisions.
+"""
+
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -17,8 +23,8 @@ if TYPE_CHECKING:
 
 
 def _scheduler_module():
-    """Return the live scheduler module without creating duplicate runtime state."""
-    main_module = sys.modules.get("__main__")
+    """Return the already-loaded scheduler module so orchestration reuses one shared runtime state."""
+    main_module = sys.modules.get("__main__")  # current top-level running module
     if main_module is not None and getattr(main_module, "__file__", "").endswith("scheduler.py"):
         return main_module
 
@@ -33,7 +39,7 @@ def _build_scheduler_stopped_status(
     counts: dict[str, int],
     pid_file: Path,
 ) -> SchedulerStatus:
-    """Translate raw process/job facts into the app-facing 'stopped' status model."""
+    """Build the public status model for the 'scheduler not running' case."""
     return SchedulerStatus(
         is_running=False,
         pid=None,
@@ -51,7 +57,7 @@ def _build_scheduler_running_status(
     pid_file: Path,
     local_timezone,
 ) -> SchedulerStatus:
-    """Translate raw process/job facts into the app-facing 'running' status model."""
+    """Build the public status model for the 'scheduler process is alive' case."""
     process = psutil.Process(pid)
     started_at = datetime.fromtimestamp(process.create_time(), local_timezone)
     return SchedulerStatus(
@@ -70,7 +76,7 @@ def _build_scheduler_status(
     counts: dict[str, int],
     local_timezone,
 ) -> SchedulerStatus:
-    """Choose stopped vs running status after checking the managed process PID file."""
+    """Decide which status shape to return after combining PID-file truth with live process checks."""
     active_pid = get_active_process_pid()
     pid_file = get_pid_file_path()
 
@@ -86,44 +92,50 @@ def _build_scheduler_status(
 # ============================================
 def create_job(data) -> "Job":
     """
+    Create, schedule, and persist one validated job request.
+
     Flow:
         add -> collect_job_input_* -> create_job
         create_job
             -> _validate_unique_job_name
             -> _build_job
             -> _schedule_single_job
-            -> _insert_job
+            -> insert_job
     """
     # Parsing belongs at the boundary; orchestration belongs here.
     scheduler_module = _scheduler_module()
 
-    if scheduler_module._count_jobs() >= scheduler_module.APP_CONFIG.max_jobs:
+    if scheduler_module.count_jobs() >= scheduler_module.APP_CONFIG.max_jobs:
         raise ValueError("Maximum of 100 jobs reached")
 
     scheduler_module._validate_unique_job_name(data.name)
     job = scheduler_module._build_job(data)
     scheduler_module._schedule_single_job(job)
-    return scheduler_module._insert_job(job)
+    return scheduler_module.insert_job(job)
 
 
 def get_jobs() -> list["Job"]:
     """
+    Return all persisted jobs in the display order chosen by the persistence layer.
+
     Flow:
         list -> get_jobs
         get_jobs
-            -> _fetch_jobs
+            -> fetch_jobs
     """
     scheduler_module = _scheduler_module()
-    return scheduler_module._fetch_jobs()
+    return scheduler_module.fetch_jobs()
 
 
 def remove_job(identifier: str) -> bool:
     """
+    Remove one job from both APScheduler memory and the database.
+
     Flow:
         remove -> remove_jobs
         remove_job
             -> _resolve_job_identifier
-            -> _remove_job_from_db
+            -> remove_job_from_db
     """
     scheduler_module = _scheduler_module()
 
@@ -137,7 +149,7 @@ def remove_job(identifier: str) -> bool:
     except scheduler_module.JobLookupError as error:
         scheduler_module.logger.warning(f"Job {job_id} not in scheduler: {error}")
 
-    removed = scheduler_module._remove_job_from_db(job_id)
+    removed = scheduler_module.remove_job_from_db(job_id)
     if removed:
         scheduler_module.logger.info(f"Job '{job.name}' ({scheduler_module.format_job_id(job_id)}) removed")
 
@@ -146,6 +158,8 @@ def remove_job(identifier: str) -> bool:
 
 def remove_jobs(identifiers: list[str]) -> list["Job"]:
     """
+    Resolve and remove multiple jobs while preserving a clean singular `remove_job` use-case.
+
     Flow:
         remove -> remove_jobs
         remove_jobs
@@ -165,6 +179,8 @@ def remove_jobs(identifiers: list[str]) -> list["Job"]:
 
 def resume_job(identifier: str) -> "Job":
     """
+    Resume one paused job, re-scheduling it first if the in-memory scheduler lost it.
+
     Flow:
         resume -> resume_jobs
         resume_job
@@ -182,6 +198,8 @@ def resume_job(identifier: str) -> "Job":
         raise ValueError(f"Job '{job.name}' has no ID")
 
     try:
+        # In-memory scheduler jobs disappear when the daemon restarts.
+        # If the job is missing there but still active in DB, re-schedule it.
         if scheduler_module.scheduler.get_job(job_id) is None:
             if scheduler_module.scheduler.running:
                 scheduler_module._schedule_single_job(job)
@@ -189,16 +207,16 @@ def resume_job(identifier: str) -> "Job":
             scheduler_module.scheduler.resume_job(job_id)
     except scheduler_module.JobLookupError:
         pass
-    except Exception as error:
-        raise RuntimeError(f"Failed to resume: {error}") from error
 
-    scheduler_module._update_job_status(job_id, scheduler_module.JobStatus.ACTIVE)
+    scheduler_module.update_job_status(job_id, scheduler_module.JobStatus.ACTIVE)
     scheduler_module.logger.info(f"Job '{job.name}' ({scheduler_module.format_job_id(job_id)}) resumed")
     return job
 
 
 def resume_jobs(identifiers: list[str]) -> list["Job"]:
     """
+    Batch wrapper around `resume_job` so CLI list handling stays separate from singular logic.
+
     Flow:
         resume -> resume_jobs
         resume_jobs
@@ -212,6 +230,8 @@ def resume_jobs(identifiers: list[str]) -> list["Job"]:
 
 def pause_job(identifier: str) -> "Job":
     """
+    Pause one active job in both APScheduler memory and persisted database state.
+
     Flow:
         pause -> pause_jobs
         pause_job
@@ -233,16 +253,16 @@ def pause_job(identifier: str) -> "Job":
             scheduler_module.scheduler.pause_job(job_id)
     except scheduler_module.JobLookupError:
         pass
-    except Exception as error:
-        raise RuntimeError(f"Failed to pause: {error}") from error
 
-    scheduler_module._update_job_status(job_id, scheduler_module.JobStatus.PAUSED)
+    scheduler_module.update_job_status(job_id, scheduler_module.JobStatus.PAUSED)
     scheduler_module.logger.info(f"Job '{job.name}' ({scheduler_module.format_job_id(job_id)}) paused")
     return job
 
 
 def pause_jobs(identifiers: list[str]) -> list["Job"]:
     """
+    Batch wrapper around `pause_job` so batching does not complicate the single-item use-case.
+
     Flow:
         pause -> pause_jobs
         pause_jobs
@@ -256,6 +276,8 @@ def pause_jobs(identifiers: list[str]) -> list["Job"]:
 
 def run_scheduler_foreground() -> None:
     """
+    Run the scheduler daemon loop in the current process and own its signal-driven shutdown.
+
     Flow:
         start --foreground -> run_scheduler_foreground
         run_scheduler_foreground
@@ -275,9 +297,10 @@ def run_scheduler_foreground() -> None:
     if existing_pid is not None:
         raise RuntimeError(f"Scheduler is already running (PID {existing_pid})")
 
-    stop_event = threading.Event()
+    stop_event = threading.Event()  # thread-safe on/off flag used by the signal handler + main loop
 
     def _handle_shutdown_signal(signum: int, frame: Any) -> None:
+        """Translate OS shutdown signals into the stop flag used by the foreground loop."""
         del frame
         stop_event.set()
         scheduler_module.logger.info(f"Received signal {signum}, shutting down scheduler")
@@ -314,6 +337,8 @@ def run_scheduler_foreground() -> None:
 
 def start_scheduler(foreground: bool = False) -> str:
     """
+    Start the scheduler either attached to this terminal or as a detached background daemon.
+
     Flow:
         start -> start_scheduler
         start_scheduler
@@ -330,18 +355,22 @@ def start_scheduler(foreground: bool = False) -> str:
 
 
 def stop_scheduler() -> bool:
+    """Stop the scheduler process through the shared process adapter."""
     return stop_process()
 def get_scheduler_status() -> SchedulerStatus:
     """
+    Return the public scheduler status built from live process facts plus persisted job counts.
+
     Flow:
         status -> get_scheduler_status
         get_scheduler_status
-            -> _count_jobs_by_status
+            -> count_jobs_by_status
             -> _build_scheduler_status
     """
+    
     # Status is derived from live process state plus current DB counts.
     scheduler_module = _scheduler_module()
     return _build_scheduler_status(
-        counts=scheduler_module._count_jobs_by_status(),
+        counts=scheduler_module.count_jobs_by_status(),
         local_timezone=scheduler_module.LOCAL_TZ,
     )

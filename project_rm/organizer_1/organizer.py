@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""CLI boundary for organizer.
+
+This file gathers user input, confirms risky actions, and formats output.
+The real use-cases live below the boundary in the application/service layers.
+"""
 
 import sys
 from datetime import datetime
@@ -30,6 +35,7 @@ app = typer.Typer(
 # ============================================
 @app.callback()
 def init() -> None:
+    """Initialize the runtime environment for this module."""
     log_file = setup_runtime_environment()
     setup_logger(log_file)
 
@@ -79,6 +85,7 @@ def _prompt_for_conflict_strategy() -> ConflictStrategy:
 def _resolve_conflict_strategy(strategy: str, interactive: bool) -> ConflictStrategy:
     # Interactive mode asks the user directly.
     # Non-interactive mode parses the CLI option value.
+    """Resolve conflict strategy."""
     if interactive:
         return _prompt_for_conflict_strategy()
     return _get_validated_value(parse_conflict_strategy(strategy), "Conflict strategy")
@@ -139,6 +146,7 @@ def organize(
     max_files: int = typer.Option(MAX_FILES, "--max-files", help="Maximum files to process"),
     backup: bool = typer.Option(False, "--backup", "-b", help="Create backup before organizing"),
 ) -> None:
+    """Organize."""
     try:
         conflict_strategy = _resolve_conflict_strategy(strategy, interactive)
         backup = _confirm_destructive_organize_strategy(conflict_strategy, dry_run, backup)
@@ -206,6 +214,7 @@ def backup(
     restore: Path | None = typer.Option(None, "--restore", "-r", help="Restore a specific backup"),
     restore_to: Path = typer.Option(Path.cwd(), "--restore-to", "-t", help="Directory to restore to"),
 ) -> None:
+    """Backup."""
     try:
         if list_backups:
             backups = list_backups(backup_dir)
@@ -266,6 +275,7 @@ def analyze(
     source_dir: Path = typer.Argument(..., help="Directory to analyze"),
     max_files: int = typer.Option(50000, help="Maximum files to scan"),
 ) -> None:
+    """Analyze."""
     try:
         analysis = run_analyze(source_dir, max_files)
         typer.echo(f"\nAnalysis of: {analysis.source_dir}")
@@ -283,6 +293,7 @@ def analyze(
 
 
 def main() -> None:
+    """Run the module entrypoint."""
     app()
 
 
