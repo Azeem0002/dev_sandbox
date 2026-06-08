@@ -145,3 +145,53 @@ ASC, DESC, AND, OR, IN, LIKE, BETWEEN
 - business rule failed -> `ValidationError`
 - OS/file/process failed -> `OSError`
 - higher-level operation failed -> `RuntimeError`
+
+
+# Naming Rules
+
+### Function Naming
+===============================================================================
+- `get_*`
+  - read/query only
+  - should not mutate state or create files/directories
+  - examples: `get_db_path`, `get_process`, `get_scheduler_status`
+
+- `setup_*`
+  - may create/init runtime state
+  - examples: log dirs, logger sinks, app-owned folders
+
+- `init_*`
+  - bootstrap or initialize a subsystem/schema/runtime backend
+  - usually allowed to mutate
+
+- `ensure_*`
+  - allowed to create/fix state so an invariant becomes true
+  - use this name when side effects are intentional and required
+
+- `build_*`
+  - pure construction only
+  - should return a value/text/object without mutating external state
+
+- `parse_*` / `normalize_*`
+  - transform input into safer/canonical form
+  - should usually stay pure
+
+- `read_*`
+  - read raw external state
+  - no mutation
+
+- `write_*`
+  - explicit mutation/output
+
+- `remove_*` / `delete_*`
+  - explicit destructive mutation
+
+- `spawn_*` / `start_*` / `stop_*`
+  - lifecycle or process/service side effects are expected
+
+
+### Quick Smell Check
+===============================================================================
+- if a `get_*` creates directories/files, rename it or move the side effect
+- if a `build_*` runs commands or writes files, rename it or split it
+- if a `setup_*` only returns a computed value with no setup, rename it

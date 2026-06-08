@@ -9,13 +9,13 @@ from datetime import datetime
 from enum import StrEnum
 
 try:
-    from .runtime_support import _get_local_timezone
+    from .runtime_support import get_local_timezone
 except ImportError:
-    from runtime_support import _get_local_timezone
+    from runtime_support import get_local_timezone
 
 # Shared timezone anchor for schedule parsing/formatting.
 # The scheduler and database adapter both depend on this meaning.
-LOCAL_TZ = _get_local_timezone()
+LOCAL_TZ = get_local_timezone()
 
 
 # Object: An instance of a class, Noun: Name of thing
@@ -43,6 +43,30 @@ class Job:
     scheduled_time: datetime | None # "21:00" or "2026-04-14T15:30:00"
     next_runtime: datetime          # Pre-calculated UTC timestamp (core driver!)
     status: JobStatus = JobStatus.ACTIVE
+
+
+def normalize_job_name(value: str) -> str:
+    """Normalize and validate the user-facing job name without changing its display casing."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("Name cannot be empty")
+
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        # Only strip matching quote wrappers. Without the quote check, a valid name
+        # like "aba" would lose its first/last character just because they match.
+        inner = cleaned[1:-1].strip()
+        if not inner:
+            raise ValueError("Name cannot be empty")
+        cleaned = inner
+
+    if not any(char.isalnum() for char in cleaned):
+        raise ValueError("Name must include at least one letter or number")
+    return cleaned
+
+
+def normalize_job_name_for_lookup(value: str) -> str:
+    """Build a case-insensitive comparison key for job-name lookup/cleanup."""
+    return normalize_job_name(value).casefold()
 
 
 # Storage/domain parser

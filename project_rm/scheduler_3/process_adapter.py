@@ -29,8 +29,8 @@ def _get_pid_file_path() -> Path:
     # `platformdirs` gives the app-owned data directory for the current OS/user.
     """Return the app-owned PID file location for the scheduler daemon."""
     data_dir = Path(get_platform_dirs().user_data_dir)
-    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # mode = for current user only
+    # Keep path getters pure: do not create directories here.
+    # The write step owns the side effect of making the parent folder.
     return data_dir / "scheduler.pid"
 
 
@@ -55,7 +55,7 @@ def _read_pid_file(*, warn_on_invalid: bool = True) -> int | None:
     
     
 
-def _get_process(pid: int) -> psutil.Process | None:
+def _get_process(pid: int) -> psutil.Process | None:  # A live interface to OS process.
     """Return a live process handle for `pid`, or `None` if the process is gone/unusable for this OS."""
     # Is there someone in Room 1234? or does this process exist and look alive?
     try:
@@ -89,12 +89,18 @@ def _is_managed_process(process: psutil.Process) -> bool:
 
 def _write_pid_file(pid: int) -> None:
     """Persist the daemon PID so later commands can find the running scheduler process."""
+    # This function is not answering a question.
+    # It is performing an action. A doer not an answer
+    
     pid_file = _get_pid_file_path()
+    # Writing is a side-effecting responsibility, so parent-dir creation belongs here.
+    pid_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True) # make sure the directory exists before writing
     logger.debug(f"Writing PID {pid} to {pid_file}")
     # PID file = small text file that records "which process currently owns this app".
     pid_file.write_text(str(pid), encoding="utf-8") 
     # UTF-8 is the universal standard that handles all languages. How text is converted to bytes
-
+    return None
+    # The -> None tells you: "I'm a doer, not an answerer."
 
 def _remove_pid_file() -> None:
     """Delete the PID file so stale process pointers do not survive shutdown."""
@@ -169,7 +175,7 @@ def _read_interval_from_process(process: psutil.Process) -> int | None:
     # Scheduler background workers do not carry an interval argument in their process command line.
     # Keep the public adapter function for the shared mental map, but return None for this project.
     """Keep the shared adapter API shape; scheduler has no process interval, so return `None`."""
-    del process
+    del process # Usually unnecessary here.
     return None
 
 def _stop_process(wait: bool = True) -> bool:
@@ -198,9 +204,9 @@ def _stop_process(wait: bool = True) -> bool:
             return True
         except psutil.TimeoutExpired:
             logger.warning(f"Scheduler process {active_pid} did not exit within timeout")
-            process.kill()
-            process.wait(timeout=5)
-            _remove_pid_file()
+            process.kill() # Force kill (SIGKILL)
+            process.wait(timeout=5) # # Wait up to 5s for it to die
+            _remove_pid_file() # Clean up the PID file
             return True
 
     return True

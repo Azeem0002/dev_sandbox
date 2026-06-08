@@ -1,0 +1,34 @@
+name: Scraper Product Digest
+
+on:
+  schedule:
+    # Product opportunity research should be a daily digest first.
+    # Jobs are urgent; product/niche changes are slower and need review, not constant alerts.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  notify-products:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Send product opportunity digest
+        env:
+          SCRAPER_SMTP_HOST: ${{ secrets.SCRAPER_SMTP_HOST }}
+          SCRAPER_SMTP_PORT: ${{ secrets.SCRAPER_SMTP_PORT }}
+          SCRAPER_SMTP_USERNAME: ${{ secrets.SCRAPER_SMTP_USERNAME }}
+          SCRAPER_SMTP_PASSWORD: ${{ secrets.SCRAPER_SMTP_PASSWORD }}
+          SCRAPER_EMAIL_FROM: ${{ secrets.SCRAPER_EMAIL_FROM }}
+          SCRAPER_EMAIL_TO: ${{ secrets.SCRAPER_EMAIL_TO }}
+          SCRAPER_PRODUCT_KEYWORD: ${{ vars.SCRAPER_PRODUCT_KEYWORD }}
+          SCRAPER_PRODUCT_REGION: ${{ vars.SCRAPER_PRODUCT_REGION }}
+        run: |
+          uv run --project scraper_4 scraper notify-products \
+            --keyword "${SCRAPER_PRODUCT_KEYWORD:-}" \
+            --region "${SCRAPER_PRODUCT_REGION:-US}" \
+            --max-results 10

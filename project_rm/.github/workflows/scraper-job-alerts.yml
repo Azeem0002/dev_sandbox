@@ -1,0 +1,50 @@
+name: Scraper Job Alerts
+
+on:
+  schedule:
+    # Competitive jobs need frequent checks, but 5 minutes is too noisy for a free MVP.
+    # Every 30 minutes plus a 3-hour lookback catches delayed runs without hammering sources.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  notify-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Restore scraper state
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.local/share/scraper
+          key: scraper-state-${{ github.run_id }}
+          restore-keys: |
+            scraper-state-
+
+      - name: Send new job alerts
+        env:
+          SCRAPER_SMTP_HOST: ${{ secrets.SCRAPER_SMTP_HOST }}
+          SCRAPER_SMTP_PORT: ${{ secrets.SCRAPER_SMTP_PORT }}
+          SCRAPER_SMTP_USERNAME: ${{ secrets.SCRAPER_SMTP_USERNAME }}
+          SCRAPER_SMTP_PASSWORD: ${{ secrets.SCRAPER_SMTP_PASSWORD }}
+          SCRAPER_EMAIL_FROM: ${{ secrets.SCRAPER_EMAIL_FROM }}
+          SCRAPER_EMAIL_TO: ${{ secrets.SCRAPER_EMAIL_TO }}
+          SCRAPER_JOB_KEYWORD: ${{ vars.SCRAPER_JOB_KEYWORD }}
+          SCRAPER_JOB_REGION: ${{ vars.SCRAPER_JOB_REGION }}
+        run: |
+          uv run --project scraper_4 scraper notify-jobs \
+            --keyword "${SCRAPER_JOB_KEYWORD:-python}" \
+            --region "${SCRAPER_JOB_REGION:-US}" \
+            --max-results 25 \
+            --max-age-hours 3
+
+      - name: Save scraper state
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: ~/.local/share/scraper
+          key: scraper-state-${{ github.run_id }}

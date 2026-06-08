@@ -13,6 +13,8 @@ import sys
 
 def _detect_platform_impl() -> str:
     """Normalize host platform names into the app's small platform vocabulary."""
+    # Return a tiny app-owned vocabulary so higher layers branch on stable names,
+    # not on every raw platform string Python exposes.
     # `os.name` is good for broad family detection.
     # `sys.platform` is better for distinguishing Linux vs macOS.
     if os.name == "nt":

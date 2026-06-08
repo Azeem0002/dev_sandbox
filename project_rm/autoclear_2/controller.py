@@ -18,7 +18,7 @@ try:
         stop_autoclear,
     )
     from .lifecycle_models import AutoclearStatus
-    from .runtime_support import _is_dev_env, _setup_env, _setup_logger
+    from .runtime_support import is_dev_env, setup_environment, setup_logger
 except ImportError:
     from application import (
         get_autoclear_status,
@@ -28,7 +28,7 @@ except ImportError:
         stop_autoclear,
     )
     from lifecycle_models import AutoclearStatus
-    from runtime_support import _is_dev_env, _setup_env, _setup_logger
+    from runtime_support import is_dev_env, setup_environment, setup_logger
 
 
 app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear controller")
@@ -40,8 +40,8 @@ app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear cont
 @app.callback()
 def init() -> None:
     """Initialize the runtime environment for this module."""
-    log_file = _setup_env()
-    _setup_logger(log_file)
+    log_file = setup_environment()
+    setup_logger(log_file)
 
 
 def _format_autoclear_status(status: AutoclearStatus) -> str:
@@ -55,7 +55,7 @@ def _format_autoclear_status(status: AutoclearStatus) -> str:
         parts.append(f"interval={status.interval_seconds}s")
     if status.last_trigger:
         parts.append(f"last_trigger={status.last_trigger}")
-    if status.pid_file is not None and _is_dev_env():
+    if status.pid_file is not None and is_dev_env():
         parts.append(f"pid_file={status.pid_file}")
     if status.detail:
         parts.append(f"detail={status.detail}")

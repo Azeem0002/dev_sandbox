@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import cast
 
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 try:
     from .job_models import (  # Relative import (package)
         Job,
         JobStatus,
         ScheduleType,
+        normalize_job_name_for_lookup,
         parse_scheduled_time_from_storage,
         format_job_id,
         serialize_scheduled_time_for_storage,
@@ -27,6 +28,7 @@ except ImportError:
         Job,
         JobStatus,
         ScheduleType,
+        normalize_job_name_for_lookup,
         parse_scheduled_time_from_storage,
         format_job_id,
         serialize_scheduled_time_for_storage,
@@ -41,50 +43,42 @@ except ImportError:
 # ============================================
 # Shared private skeleton - start reading here
 # ============================================
-# Platform-appropriate data directory
+# Resolve platform-owned app dirs once at module load so the adapter uses one stable DB location.
 dirs = get_platform_dirs()
+
 # if path is a file, create a .parent, else it pathlib will make path a directory
 
 def _get_db_path() -> Path:
     """Return the database file path."""
+    # Keep path getters pure: return the path only.
+    # Directory creation belongs in init/setup responsibilities, not in a getter.
     return Path(dirs.user_data_dir) / "jobs.db"
-
-
-def _normalize_job_name_for_storage(value: str) -> str:
-    """Normalize job name for storage."""
-    cleaned = value.strip()
-    if not cleaned:
-        raise ValueError("Name cannot be empty")
-
-    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
-        inner = cleaned[1:-1].strip()
-        if not inner:
-            raise ValueError("Name cannot be empty")
-        cleaned = inner
-
-    if not any(char.isalnum() for char in cleaned):
-        raise ValueError("Name must include at least one letter or number")
-    return cleaned.casefold()
 
 
 def _delete_jobs_by_ids(conn: sqlite3.Connection, job_ids: list[str]) -> int:
     """Delete multiple jobs by their IDs."""
     if not job_ids:
         return 0
-    conn.executemany("DELETE FROM jobs WHERE id = ?", [(job_id,) for job_id in job_ids])
-    # delete rows where id matches. Runs the same SQL multiple times with different values.
+    # executemany(): Delete many rows using same SQL template. or Run the same DELETE for each job ID.
+    conn.executemany("DELETE FROM jobs WHERE id = ?", [(job_id,) for job_id in job_ids]) # db row expects a tuple
+    # delete rows where id matches. Runs the same SQL multiple times  at once with different values.
     return len(job_ids)
 
 
 def _cleanup_jobs_table(conn: sqlite3.Connection) -> int:
     """Remove invalid or duplicate jobs from the database."""
-    conn.row_factory = sqlite3.Row #  Make rows accessible by column name (like dictionaries access) e.g row["id"]
+    conn.row_factory = sqlite3.Row # row_factory: attribute of sqlite3.Connection = Make rows accessible by column name (like dictionaries access) e.g row["id"]
+    # row_factory: A setting on the connection = tells SQLite HOW to build rows i.e "How should I package results?"
+    # sqlite3.Row: A factory class that creates Row objects = the actual row object format i.e "Package them in labeled boxes"
+    # Without it: row[0] i.e only positional access
+    # With it: row["id"]  i.e key access
+
     rows = conn.execute("""
         SELECT id, name, next_run_time_utc
         FROM jobs
         ORDER BY next_run_time_utc, id
-    """).fetchall() # rows = conn.e..: Returns list of all matching rows
-    # ORDER BY ...).fetchall(): Get all jobs ordered by next run time, then by ID
+    """).fetchall() # rows = conn.e.. = Returns list of all matching rows
+    # ORDER BY ...).fetchall(): Get all jobs ordered by next_run_time, then by id
     
     invalid_ids: list[str] = []
     duplicate_ids: list[str] = [] # List: order matters, just collecting
@@ -98,8 +92,8 @@ def _cleanup_jobs_table(conn: sqlite3.Connection) -> int:
         # Extract ID and name from each row. cast() tells type checker what to expect.
 
         try: # Try to normalize name. If fails (empty/invalid), mark for removal.
-            normalized_name = _normalize_job_name_for_storage(raw_name)
-            # .casefold(): More aggressive .lower(), designed for case-insensitive comparison:
+            normalized_name = normalize_job_name_for_lookup(raw_name)
+            # .casefold(): A more aggressive '.lower()', designed for case-insensitive comparison:
             # Best fix: Use casefold() for name comparisons (it handles international characters better).
         
         except ValueError:
@@ -131,7 +125,8 @@ DB_PATH = _get_db_path() # resolved module-level path
 
 def _init_db() -> None:
     """Initialize database schema(blueprint/structure) and indexes."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Init is the explicit setup step, so parent-dir creation belongs here.
+    DB_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # create database folder if it doesn't exist
 
     with sqlite3.connect(DB_PATH) as conn: # Create tables and indexes
@@ -141,7 +136,7 @@ def _init_db() -> None:
         # === PERFORMANCE & SAFETY SETTINGS ===
         conn.execute("PRAGMA journal_mode=WAL;")  # Allows concurrent reads/writes simultaneously so that they don't block each other
         conn.execute("PRAGMA synchronous=NORMAL;")  # Balance safety and speed. Save document every 5 seconds vs every keystroke
-        conn.execute("PRAGMA cache_size=-10000;")  # 10MB cache
+        conn.execute("PRAGMA cache_size=10000;")  # 10MB cache
         conn.execute("PRAGMA temp_store=MEMORY;")  # Temp tables in RAM -> faster
         conn.execute("PRAGMA busy_timeout=5000;")  # Wait 5 seconds if DB is locked instead of failing immediately
         # PRAGMA: Tunning engine setting: improves performance. SQLITE specific
@@ -159,10 +154,12 @@ def _init_db() -> None:
             status TEXT NOT NULL DEFAULT 'active'
         )
         """)
+        # Store local schedule meaning and UTC execution meaning in separate columns.
+        # That avoids "same instant, different timezone" confusion during reads/debugging.
         # PRIMARY KEY = Unique identifier for each row. No two jobs can have the same ID.
         # TEXT NOT NULL DEFAULT 'active' = required. stores TEXT, Can't be NULL, If not specified, defaults to fallback value 'active'
-        # jobs is a table name
-        # schedule_time: when user want's to run in local time
+        # jobs is the table name
+        # scheduled_time: when user want's to run in local time
         # next_run_time: actual execution time in UTC
 
         
@@ -171,6 +168,9 @@ def _init_db() -> None:
             logger.warning(f"Removed {removed_count} invalid/duplicate job(s) during startup cleanup")
 
         # === INDEXES ===
+        # database optimization structure. faster lookup and speeds up query like a search shortcut and prevents duplicates
+        # Without indexes: SQLite scans every row (slow for 1000+ jobs).
+        # With indexes: SQLite jumps directly to matching rows (fast).
         conn.execute("CREATE INDEX IF NOT EXISTS idx_next_run ON jobs(next_run_time_utc)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON jobs(status)")
         conn.execute("""
@@ -180,15 +180,24 @@ def _init_db() -> None:
         """)
         # ON jobs(lower(trim(name))): remove white spaces and convert to lower case
         # WHERE trim(name) <> '' : meaning: enforce uniqueness ignoring case, space. skip empty names. Only index non-empty names
-
+        # idx_next_run: This is just developer-chosen index name. Origin: idx = index, next_run = descriptive label
         logger.debug("Database Initialized")
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=5))
+@retry(
+    # Retry only transient SQLite operational failures, e.g. "database is locked".
+    # Validation errors like duplicate names should fail immediately, not be retried.
+    retry=retry_if_exception_type(sqlite3.OperationalError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5),
+    reraise=True,
+)
 def _insert_job(job: Job) -> Job:
     """Save job to database with retry."""
     with sqlite3.connect(DB_PATH) as conn:
         try:
+            # SQLite cannot store Python lists/enums/datetimes directly in one column shape we control.
+            # Serialize them at the boundary so the DB only sees plain strings.
             conn.execute("""
                 INSERT INTO jobs (
                     id, name, command, schedule_type,
@@ -232,7 +241,9 @@ def _fetch_jobs() -> list[Job]:
         # execute() → runs parameterized query command
         # .fetchall() → retrieves results: Give me all rows from the query result”
 
-    return [ 
+    return [
+        # Rehydrate storage strings back into the app's typed Job model. converting from sqlite code back to python code
+        # r: is just a variable name. usually a shorthand for row
         Job( 
             id=r["id"], # Plane → string
             name=r["name"],  # Plane → string
@@ -265,7 +276,7 @@ def _count_jobs() -> int:
         # ask DB: “how many rows?”
 
         return cursor.fetchone()[0]
-    # .fetchone() returns the first row (as a tuple) e.g (8, 0). [0] extracts the first value: int:8.
+    # .fetchone() returns total number in the first/single row (as a tuple) e.g (8, 0). [0] extracts the first value: int:8.
 
 
 def _count_jobs_by_status() -> dict[str, int]:  # Returns a dictionary: {"active": 5, "paused": 3}.
@@ -288,7 +299,7 @@ def _update_job_status(job_id: str, status: JobStatus) -> None:
     """Update job status in database."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("UPDATE jobs SET status = ? WHERE id = ?", (status.value, job_id))
-        # In the jobs table, find the row with this ID, and change its status to this value.
+        # In the jobs table, find the row with this ID, and change/update its status to this value.
         # ?: Prevents SQL injection. Never do: f"WHERE id = {job_id}"
 
 # ============================================
@@ -297,7 +308,7 @@ def _update_job_status(job_id: str, status: JobStatus) -> None:
 
 def get_db_path() -> Path:
     """Return the database file path."""
-    return _get_db_path()
+    return DB_PATH
 
 def init_db() -> None:
     """Public wrapper for initializing the scheduler database schema."""

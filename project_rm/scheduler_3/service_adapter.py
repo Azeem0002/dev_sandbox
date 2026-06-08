@@ -32,6 +32,7 @@ WINDOWS_TASK_NAME = "Scheduler"
 # ============================================
 def _format_exec_args(args: list[str]) -> str:
     """Shell-quote each argument before embedding it into a systemd unit file."""
+    # systemd unit files store ExecStart as shell-like text, not as a Python argv list.
     return " ".join(shlex.quote(arg) for arg in args)
 
 
@@ -58,6 +59,7 @@ def _build_systemd_service(*, system: bool) -> str:
     ]
 
     if system:
+        # System services run outside the current user session, so add the target user explicitly.
         service_lines.append(f"User={getpass.getuser()}")
 
     service_lines.extend([
@@ -80,6 +82,8 @@ def _build_systemd_service(*, system: bool) -> str:
 
 def _build_windows_task_command() -> list[str]:
     """Build the `schtasks` command that launches the scheduler at user logon."""
+    # list2cmdline() converts Python argv pieces into the single Windows command string
+    # Task Scheduler expects in its /tr field.
     task_target = subprocess.list2cmdline([sys.executable, str(_get_scheduler_script_path()), "start"])
     return [
         "schtasks",
@@ -119,6 +123,7 @@ def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProc
 
 def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) -> str | None:
     """Read one systemd unit property using `systemctl show`."""
+    # `systemctl show --property=X --value` is cleaner for scripts than parsing human-oriented status output.
     result = _run_systemctl(["show", unit_name, f"--property={property_name}", "--value"], system=system)
     if result.returncode != 0:
         return None
@@ -154,6 +159,7 @@ def _install_systemd_user(service_content: str) -> Path:
 def _install_systemd_system(service_content: str) -> Path:
     """Install the service unit into `/etc/systemd/system` through `sudo tee`."""
     service_path = Path("/etc/systemd/system") / SYSTEMD_SERVICE_NAME
+    # `sudo tee <path>` lets us write privileged files while still feeding content from Python stdin.
     result = _run_system_command(["sudo", "tee", str(service_path)], input_text=service_content)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Failed to install systemd service")
@@ -171,6 +177,7 @@ def _start_with_systemd(*, system: bool) -> str:
     if not _is_systemd_service_installed(system=system):
         raise RuntimeError("Scheduler service is not installed. Run install-service first.")
 
+    # daemon-reload tells systemd to rescan unit files after install/update.
     reload_result = _run_systemctl(["daemon-reload"], system=system)
     if reload_result.returncode != 0:
         raise RuntimeError(reload_result.stderr.strip() or "systemctl daemon-reload failed")

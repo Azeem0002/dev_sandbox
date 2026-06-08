@@ -1,9 +1,3 @@
-from platformdirs import PlatformDirs
+import os
+import sys
 
-APP_NAME="scheduler"
-APP_AUTHOR="Al-Azeem"
-
-def _get_platform_dir()-> PlatformDirs:
-    return PlatformDirs(APP_NAME, APP_AUTHOR)
-
-def _

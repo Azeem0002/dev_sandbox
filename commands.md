@@ -50,8 +50,13 @@ git remote -v
 
 
 # Mirror push remote (both) — GitHub + GitLab
-git remote add both https://github.com/Azeem0002/dev_sandbox.git
+<!-- https -->
+git remote add origin https://github.com/Azeem0002/dev_sandbox.git
 git remote set-url --add both https://gitlab.com/Azeem0002/dev_sandbox.git
+
+<!-- ssh -->
+git remote add origin/all git@gitlab.com:Azeem002/scraper_4.git
+git remote set-url --add --push origin/all git@gitlab.com:Azeem002/scraper_4.git
 
 <!-- Verify: -->
 git remote -v

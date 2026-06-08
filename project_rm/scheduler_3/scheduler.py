@@ -43,9 +43,16 @@ try:
         count_jobs_by_status,
         update_job_status,
     )
-    from .job_models import Job, JobStatus, ScheduleType, parse_scheduled_time_from_storage, format_job_id
+    from .job_models import (
+        Job,
+        JobStatus,
+        ScheduleType,
+        normalize_job_name,
+        parse_scheduled_time_from_storage,
+        format_job_id,
+    )
     from .lifecycle_models import SchedulerStatus
-    from .platform_adapter import _detect_platform
+    from .platform_adapter import detect_platform
     from .process_adapter import (
         get_active_process_pid,
         get_pid_file_path,
@@ -54,7 +61,7 @@ try:
         stop_process,
         write_pid_file,
     )
-    from .runtime_support import _get_local_timezone, _is_dev_env, _setup_env, _setup_logger
+    from .runtime_support import get_local_timezone, is_dev_env, setup_environment, setup_logger
     from .service_adapter import install_service
 except ImportError:
     from database_adapter import (
@@ -66,9 +73,16 @@ except ImportError:
         count_jobs_by_status,
         update_job_status,
     )
-    from job_models import Job, JobStatus, ScheduleType, parse_scheduled_time_from_storage, format_job_id
+    from job_models import (
+        Job,
+        JobStatus,
+        ScheduleType,
+        normalize_job_name,
+        parse_scheduled_time_from_storage,
+        format_job_id,
+    )
     from lifecycle_models import SchedulerStatus
-    from platform_adapter import _detect_platform
+    from platform_adapter import detect_platform
     from process_adapter import (
         get_active_process_pid,
         get_pid_file_path, 
@@ -77,7 +91,7 @@ except ImportError:
         stop_process,
         write_pid_file,
     )
-    from runtime_support import _get_local_timezone, _is_dev_env, _setup_env, _setup_logger
+    from runtime_support import get_local_timezone, is_dev_env, setup_environment, setup_logger
     from service_adapter import install_service
 
 class AppConfig(BaseModel):
@@ -91,7 +105,7 @@ class AppConfig(BaseModel):
 
 APP_CONFIG = AppConfig()
 STORAGE_TZ = ZoneInfo(APP_CONFIG.storage_timezone)
-LOCAL_TZ = _get_local_timezone()
+LOCAL_TZ = get_local_timezone()
 
 scheduler = BackgroundScheduler(timezone=LOCAL_TZ)
 
@@ -123,7 +137,7 @@ class AddJobInput(BaseModel): #Job application form
     @classmethod  # Called on the class, before instance exists
     def _adapt_name_for_model(cls, value: str) -> str: # cls: because the instance doesn't exist yet
         """Adapt name for model."""
-        return _normalize_job_name(value)
+        return normalize_job_name(value)
 
     @field_validator("command", mode="before") 
     # field_validator must match the exact field name in your model
@@ -131,15 +145,15 @@ class AddJobInput(BaseModel): #Job application form
     def _adapt_command_for_model(cls, value: Any) -> str:
         # Keep 'type: Any' for mode="before". data could be any type
         """Adapt command for model."""
-        return _normalize_command(value)[0]
+        return _parse_command_input(value)
 
     @field_validator("schedule_type", mode="before") # mode="before": Before Pydantic type conversion
     @classmethod
     def _adapt_schedule_type_for_model(cls, value: Any) -> ScheduleType:
         # Any acknowledges "we don't know what we'll get yet" before Pydantic coerces to enum.
         """Adapt schedule type for model."""
-        if not isinstance(value, str): # validates correct type
-            raise ValueError("Schedule type must be text")
+        if not isinstance(value, str): # for validating type directly/correctly
+            raise TypeError("Schedule type must be text")
         return _validate_schedule_type(value)
 
     @field_validator("days_of_week")
@@ -415,27 +429,6 @@ def _load_jobs_from_database() -> int:
 
     return loaded
 
-def _require_non_empty_text(value: str, field_name: str) -> str:
-    """Require non empty text."""
-    cleaned = value.strip() if isinstance(value, str) else ""
-    if not cleaned:
-        raise ValueError(f"{field_name} cannot be empty")
-    return cleaned
-
-
-def _normalize_job_name(value: str) -> str:
-    """Normalize job name."""
-    cleaned = _require_non_empty_text(value, "Name")
-    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
-        inner = cleaned[1:-1].strip()
-        if not inner:
-            raise ValueError("Name cannot be empty")
-        cleaned = inner
-
-    if not any(char.isalnum() for char in cleaned):
-        raise ValueError("Name must include at least one letter or number")
-    return cleaned
-
 def _normalize_command(value: Any) -> tuple[str, list[str]]:
     """Normalize command."""
     if not isinstance(value, str):
@@ -467,7 +460,7 @@ def _normalize_command(value: Any) -> tuple[str, list[str]]:
     return cleaned, cleaned_parts
 
 
-def _parse_command_input(value: str) -> str:
+def _parse_command_input(value: Any) -> str:
     """Validate CLI command text and return the normalized command string."""
     return _normalize_command(value)[0]
 
@@ -484,7 +477,7 @@ def _normalize_days_list(value: list[int] | None) -> list[int] | None:
 
 def _validate_unique_job_name(value: str) -> str:
     """Validate unique job name."""
-    cleaned = _normalize_job_name(value)
+    cleaned = normalize_job_name(value)
     existing = _find_job_by_name(cleaned)
     if existing is not None:
         raise ValueError(
@@ -607,8 +600,8 @@ def init():
     # Boundary setup only. This is not business logic.
     # We prepare logging and ensure the DB schema exists before any CLI command runs.
     """Initialize the runtime environment for this module."""
-    file_log = _setup_env()
-    _setup_logger(file_log)
+    file_log = setup_environment()
+    setup_logger(file_log)
     init_db()
 
 """
@@ -920,7 +913,7 @@ def status():
             f"{scheduler_status.active_jobs} active | "
             f"{scheduler_status.paused_jobs} paused"
         )
-        if _is_dev_env():
+        if is_dev_env():
             typer.echo(f"PID file: {scheduler_status.pid_file}")
     except Exception as e:
         typer.echo(f"✗ Error: {e}", err=True)

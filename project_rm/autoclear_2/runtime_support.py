@@ -34,6 +34,7 @@ def _get_platform_dirs() -> PlatformDirs:
 
 def _is_dev_env() -> bool:
     """Return whether runtime behavior should stay in development mode instead of production mode."""
+    # Default to dev so local runs are noisy and easier to debug unless prod is explicit.
     return os.getenv("APP_ENV", "dev").strip().lower() != "prod"
 
 
@@ -46,6 +47,7 @@ def _get_local_timezone():
         except ZoneInfoNotFoundError:
             logger.warning(f"Unknown timezone '{tz_name}', falling back to system local timezone")
 
+    # astimezone().tzinfo asks Python for the OS-local timezone attached to "now".
     detected = datetime.now().astimezone().tzinfo  # Ask the OS "what timezone am I in right now?"
     if detected is not None:
         return detected
@@ -58,6 +60,7 @@ def _get_local_timezone():
 # ============================================
 def _get_worker_script_path() -> Path:
     """Return the worker entry script path used by detached process and service backends."""
+    # One helper owns this path so process/service code does not duplicate worker entry knowledge.
     return Path(__file__).with_name("autoclear.py").resolve()
 
 
@@ -66,6 +69,7 @@ def _setup_environment() -> Path:
     """Prepare runtime-owned directories and return the concrete autoclear log file path."""
     dirs = _get_platform_dirs()
     log_dir = Path(dirs.user_log_dir)
+    # Runtime setup is allowed to mutate the filesystem because "setup" is the responsibility name.
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / "autoclear.log"
 
@@ -143,9 +147,6 @@ def get_worker_script_path() -> Path:
 # ============================================
 # Backward-compatible aliases - old names
 # ============================================
-_get_platform_dirs = get_platform_dirs
-_is_dev_env = is_dev_env
-_get_local_timezone = get_local_timezone
+# Do not alias names that already exist as private implementations.
+# Rebinding `_setup_logger = setup_logger` makes the public wrapper call itself forever.
 _setup_env = setup_environment
-_setup_logger = setup_logger
-_get_worker_script_path = get_worker_script_path

@@ -8,73 +8,16 @@ import subprocess
 import time
 import os # python standard module for interacting with the operating system
 import sys
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable # Callable: Anything you can call like a function: something()
 
-from platformdirs import PlatformDirs
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-
-# =============================================================================
-# DOMAIN
-# =============================================================================
-
-def _setup_env()->Path:
-    """cross platform path for logs"""
-
-    APP_NAME= "autoclear"
-    APP_AUTHOR= "Al-Azeem" # appauthor mainly matters on windows
-
-    dirs = PlatformDirs(appname=APP_NAME, appauthor=APP_AUTHOR)
-    
-    LOG_DIR= Path(dirs.user_log_dir)
-
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-    log_file= LOG_DIR / "autoclear.log" 
-    return log_file
-
-
-def _setup_logger(log_file: Path)-> None:
-    
-    """Setup logger."""
-    logger.remove() # remove default settings/ink
-
-    ENV = os.getenv("APP_ENV", "dev") # os.getenv(key, value)
-    # "APP_ENV": The key for ENV. can be an string
-    # "dev" fallback value. default environment is determined by the fallback
-
-    if ENV == "prod":
-        # Production environment: stdout only
-        logger.add(
-        sink = sys.stdout,
-        level= "INFO",
-        enqueue= True,
-        )
-
-    # Development environment: stdout + file
-    else:
-
-        logger.add(
-        sink = sys.stdout,
-        level= "DEBUG",
-        enqueue= True,
-        backtrace=True,
-        )
-
-        logger.add(
-            sink= log_file,
-            level = "DEBUG",
-            rotation= "2 MB",
-            retention= "3 days", # or 3 files
-            compression= "gz",
-            serialize= True,
-            enqueue= True,
-            backtrace=True,
-            catch=True,
-            )
+try:
+    from .runtime_support import setup_environment, setup_logger
+except ImportError:
+    from runtime_support import setup_environment, setup_logger
 
 
 # ==========================
@@ -184,8 +127,9 @@ def run_autoclear(config: AutoclearConfig) -> None:
    
 def init():
     """Initialize the runtime environment for this module."""
-    LOG_FILE = _setup_env()
-    _setup_logger(LOG_FILE)
+    # Worker and controller share the same runtime adapter so log paths/settings do not drift.
+    log_file = setup_environment()
+    setup_logger(log_file)
 
 if __name__ == "__main__":
     init()

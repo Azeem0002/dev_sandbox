@@ -39,6 +39,7 @@ SYSTEMD_TIMER_NAME = "autoclear.timer"
 # ============================================
 def _format_exec_args(args: list[str]) -> str:
     """Shell-quote each argument before embedding it into a systemd unit file."""
+    # systemd unit files store ExecStart as shell-like text, not as a Python argv list.
     return " ".join(shlex.quote(arg) for arg in args)
 
 
@@ -58,6 +59,7 @@ def _build_systemd_service(*, system: bool) -> str:
     ]
 
     if system:
+        # System services run outside the current user session, so add the target user explicitly.
         service_lines.append(f"User={getpass.getuser()}")
 
     service_lines.extend([
@@ -77,6 +79,8 @@ def _build_windows_task_command(interval_secs: int) -> list[str]:
     """Build the `schtasks` command that launches the autoclear worker at logon."""
     # Windows Task Scheduler cannot use "every N seconds" as flexibly as systemd timers.
     # Use a startup task that launches the long-running autoclear worker with its interval argument.
+    # list2cmdline() converts Python argv pieces into the single Windows command string
+    # Task Scheduler expects in its /tr field.
     task_target = subprocess.list2cmdline([sys.executable, str(get_worker_script_path()), str(interval_secs)])
     return [
         "schtasks",
@@ -137,6 +141,7 @@ def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProc
 
 def _read_systemd_property(unit_name: str, property_name: str, *, system: bool) -> str | None:
     """Read one systemd unit property using `systemctl show`."""
+    # `systemctl show --property=X --value` is cleaner for scripts than parsing human-oriented status output.
     result = _run_systemctl(["show", unit_name, f"--property={property_name}", "--value"], system=system)
     if result.returncode != 0:
         return None
@@ -176,6 +181,7 @@ def _install_systemd_system(service_content: str, timer_content: str) -> tuple[P
     service_path = Path("/etc/systemd/system") / SYSTEMD_SERVICE_NAME
     timer_path = Path("/etc/systemd/system") / SYSTEMD_TIMER_NAME
 
+    # `sudo tee <path>` lets us write privileged files while still feeding content from Python stdin.
     service_result = _run_system_command(["sudo", "tee", str(service_path)], input_text=service_content)
     if service_result.returncode != 0:
         raise RuntimeError(service_result.stderr.strip() or "Failed to install systemd service")
@@ -195,6 +201,7 @@ def _is_systemd_timer_installed(*, system: bool) -> bool:
 
 def _status_from_systemd(*, system: bool) -> AutoclearStatus:
     """Summarize the installed timer/service state into one app-facing status model."""
+    # Read raw unit properties once here so the rest of the app can consume one typed status object.
     if not _is_systemd_timer_installed(system=system):
         return AutoclearStatus(
             backend="systemd",
@@ -229,6 +236,7 @@ def _start_with_systemd(interval_secs: int, *, system: bool) -> str:
     if not _is_systemd_timer_installed(system=system):
         raise RuntimeError("Autoclear systemd timer is not installed. Run install-service first.")
 
+    # daemon-reload tells systemd to rescan unit files after install/update.
     reload_result = _run_systemctl(["daemon-reload"], system=system)
     if reload_result.returncode != 0:
         raise RuntimeError(reload_result.stderr.strip() or "systemctl daemon-reload failed")

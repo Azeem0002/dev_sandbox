@@ -14,9 +14,9 @@ from loguru import logger
 from platformdirs import PlatformDirs
 
 try:
-    from .models import APP_CONFIG, BACKUP_DIR, LOG_DIR
+    from .models import APP_DIRS, BACKUP_DIR, LOG_DIR
 except ImportError:
-    from models import APP_CONFIG, BACKUP_DIR, LOG_DIR
+    from models import APP_DIRS, BACKUP_DIR, LOG_DIR
 
 
 # ============================================
@@ -28,11 +28,15 @@ except ImportError:
 # ============================================
 def _get_platform_dirs() -> PlatformDirs:
     """Return the OS-specific per-user directories this app should treat as its home."""
-    return PlatformDirs(APP_CONFIG.app_name, APP_CONFIG.app_author)
+    # `platformdirs` hides OS differences like:
+    # Linux -> ~/.local/share/<app>, Windows -> AppData, macOS -> Library/Application Support
+    # Organizer already centralizes path constants in models.py, so reuse that single object.
+    return APP_DIRS
 
 
 def _is_dev_env() -> bool:
     """Return whether runtime behavior should stay in development mode instead of production mode."""
+    # Default to dev so local runs are noisy and easier to debug unless prod is explicit.
     return os.getenv("APP_ENV", "dev").strip().lower() != "prod"
 
 
@@ -45,6 +49,7 @@ def _get_local_timezone():
         except ZoneInfoNotFoundError:
             logger.warning(f"Unknown timezone '{tz_name}', falling back to system local timezone")
 
+    # astimezone().tzinfo asks Python for the OS-local timezone attached to "now".
     detected = datetime.now().astimezone().tzinfo
     if detected is not None:
         return detected
@@ -55,6 +60,7 @@ def _get_local_timezone():
 # REUSABLE: small cross-project pattern for preparing app-owned directories.
 def _setup_environment() -> Path:
     """Create organizer-owned runtime directories and return the concrete organizer log file path."""
+    # Setup owns side effects like creating app folders; getters should stay pure.
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     return LOG_DIR / "organizer.log"
@@ -127,9 +133,8 @@ def setup_logger(log_file: Path) -> None:
 # ============================================
 # Backward-compatible aliases - old names
 # ============================================
-_get_platform_dirs = get_platform_dirs
-_is_dev_env = is_dev_env
-_get_local_timezone = get_local_timezone
+# Do not alias names that already exist as private implementations.
+# Rebinding `_get_local_timezone = get_local_timezone` makes the public wrapper
+# call itself forever, which causes RecursionError.
 _setup_env = setup_environment
-_setup_logger = setup_logger
 setup_runtime_environment = setup_environment

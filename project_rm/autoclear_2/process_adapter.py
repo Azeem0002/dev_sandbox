@@ -13,9 +13,9 @@ import psutil
 from loguru import logger
 
 try:
-    from .runtime_support import get_platform_dirs
+    from .runtime_support import get_platform_dirs, get_worker_script_path
 except ImportError:
-    from runtime_support import get_platform_dirs
+    from runtime_support import get_platform_dirs, get_worker_script_path
 
 
 # ============================================
@@ -29,7 +29,8 @@ def _get_pid_file_path() -> Path:
     # `platformdirs` gives the app-owned data directory for the current OS/user.
     """Return the app-owned PID file location for the autoclear worker process."""
     data_dir = Path(get_platform_dirs().user_data_dir)
-    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Keep path getters pure: do not create directories here.
+    # The write step owns the side effect of making the parent folder.
     return data_dir / "autoclear.pid"
 
 
@@ -71,13 +72,16 @@ def _is_managed_process(process: psutil.Process) -> bool:
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
         return False
 
-    script_path = str(Path(__file__).with_name("autoclear.py").resolve())  # absolute path to our worker script
+    # Reuse the runtime adapter's helper so one module owns the worker-script path.
+    script_path = str(get_worker_script_path())  # absolute path to our worker script
     return any(part == script_path or part.endswith("autoclear.py") for part in cmdline)
 
 
 def _write_pid_file(pid: int) -> None:
     """Persist the worker PID so later commands can find and manage the running process."""
     pid_file = _get_pid_file_path()
+    # Writing is a side-effecting responsibility, so parent-dir creation belongs here.
+    pid_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     logger.debug(f"Writing PID {pid} to {pid_file}")
     # PID file = small text file that records "which process currently owns this app".
     pid_file.write_text(str(pid), encoding="utf-8")
@@ -117,7 +121,7 @@ def _spawn_detached_process(interval_secs: int) -> int:
         raise RuntimeError(f"Autoclear is already running (PID {existing_pid})")
 
     # Return the standalone worker entrypoint that detached processes and services must launch.
-    script_path = Path(__file__).with_name("autoclear.py").resolve()
+    script_path = get_worker_script_path()
     
     process = subprocess.Popen(
         [sys.executable, str(script_path), str(interval_secs)],

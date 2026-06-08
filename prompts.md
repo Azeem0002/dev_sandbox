@@ -1,7 +1,7 @@
 ================================================================================================================
 ## FOR QUESTIONS / REVIEWS
 
-- Explain deeply but in simple terms.
+- Explain deeply but in simple terms, translation or analogy where fits.
 - State why a strategy is recommended.
 - Avoid over engineering & unnecessary wrapper patterns.
 - Solve the root cause, not the symptom.
@@ -27,55 +27,22 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. which is better between this:
-def _is_managed_process(proc: psutil.Process)-> bool:
-    try:
-        cmdline = proc.cmdline()
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return False
-    
-    script_path = Path(__file__).with_name("scheduler.py").resolve()
-    return any(part == script_path or part.endswith("scheduler.py") for part in cmdline)
-and this and why:
-def _is_managed_process(proc: psutil.Process)-> bool:
-    try:
-        cmdline = proc.cmdline()
-
-        script_path = Path(__file__).with_name("scheduler.py").resolve()
-        return any(part == script_path or part.endswith("scheduler.py") for part in cmdline)
-    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-        return False
-2. explain again in a much more simpler terms and analogy why this func isn't having return
-* it makes understanding how function works confusing
-def _write_pid_file(pid: int)-> None:
-    pid_file = _get_pid_file_path()
-    logger.debug(f"writing {pid} to {pid_file}")
-    pid_file.write_text(str(pid) ,encoding="utf-8")
-3. raise and return can overlap sometimes when exiting the entire program correct?
-e.g here, we can also return runtimerrror as false
-def _stop_process()-> bool:
-    active_process =_get_active_process_pid()
-    if active_process is None:
-        logger.info("Scheduler is not running")
-        return False
-
-4. in this block, are we waiting to kill or waiting to remove id file?
-xcept psutil.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-            _remove_pid_file()
-            return True
-5. can normalize function name also be renamed as validation?
-6. translate what this is saying:
-"resolved module-level path"
-7. 
-
-# Solve the root problem not symptoms:
-
-1. is there a reason why database_adapter has ony one public adapter api or is it an error?
-* notes and database reusable adapter don't match, what would be recommended and why for a reusable mental model across multiple projects?
+1. how to host by program on github action?
 2. 
 
+
+
+
+
+# Solve the root problem not symptoms:
+# Check previous projects first for reusable functions/adapters for retention learning and recognition line for line in the correct order except for project specific functions
+# Update PROJECT_COMMANDS.md if needed
+
+1. i have 4 projects, how do i know what to learn or where to start learning from or what not to waste or pay too much time/attention on?  
+2. 
+
+
+            
 
 
 
@@ -100,7 +67,7 @@ Think architecturally first, implement practically, and apply only the principle
 - Prefer simple, explicit designs over clever abstractions.
 - Use battle-tested libraries when they reduce cost, risk, or maintenance burden.
 - Suggest third-party tools/services when they are cheaper and more practical than custom code.
-- Prioritize security, input safety, edge cases, and failure handling.
+- Prioritize security, input safety, edge cases, failure handling and no hardcoding.
 - Be direct about design flaws, technical debt, and tradeoffs.
 
 ## ARCHITECTURE RULES
@@ -119,7 +86,8 @@ Rules:
 - Boundary layers accept input and present output.
 - Core should remain mostly stable if frameworks or infrastructure change.
 - Keep side effects at the edges.
-- maintain system design across previous projects and use same reusable function names across previous projects
+- Maintain system design across projects in `project_rm/`.
+- When the same reusable adapter or helper appears in multiple projects, keep the file name, function name, function order, public API, and private skeleton word-for-word where the responsibility is truly the same. Allow differences only when the project capability is genuinely different.
 
 ## FLOW
 INPUT -> PARSE -> CLEAN -> DECIDE -> SAVE -> EXECUTE -> LOG -> PRESENT

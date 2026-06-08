@@ -12,12 +12,12 @@ from pathlib import Path
 import typer
 
 try:
-    from .application import list_backups, run_analyze, run_backup, run_organize, run_restore
+    from .application import list_backups as list_existing_backups, run_analyze, run_backup, run_organize, run_restore
     from .models import BACKUP_DIR, MAX_FILES, BackupCommandInput, ConflictStrategy, OrganizeFilesInput, Validated, ValidationError
     from .runtime_support import setup_logger, setup_runtime_environment
     from .validation import parse_conflict_strategy
 except ImportError:
-    from application import list_backups, run_analyze, run_backup, run_organize, run_restore
+    from application import list_backups as list_existing_backups, run_analyze, run_backup, run_organize, run_restore
     from models import BACKUP_DIR, MAX_FILES, BackupCommandInput, ConflictStrategy, OrganizeFilesInput, Validated, ValidationError
     from runtime_support import setup_logger, setup_runtime_environment
     from validation import parse_conflict_strategy
@@ -217,7 +217,7 @@ def backup(
     """Backup."""
     try:
         if list_backups:
-            backups = list_backups(backup_dir)
+            backups = list_existing_backups(backup_dir)
             if not backups:
                 typer.echo("No backups found.")
                 return

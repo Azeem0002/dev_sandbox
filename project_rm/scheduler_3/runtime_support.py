@@ -33,6 +33,7 @@ def _get_platform_dirs() -> PlatformDirs:
 
 def _is_dev_env() -> bool:
     """Return whether runtime behavior should stay in development mode instead of production mode."""
+    # Default to dev so local runs are noisy and easier to debug unless prod is explicit.
     return os.getenv("APP_ENV", "dev").strip().lower() != "prod"
 
 
@@ -45,6 +46,7 @@ def _get_local_timezone():
         except ZoneInfoNotFoundError:
             logger.warning(f"Unknown timezone '{tz_name}', falling back to system local timezone")
 
+    # astimezone().tzinfo asks Python for the OS-local timezone attached to "now".
     detected = datetime.now().astimezone().tzinfo # Ask the OS "what timezone am I in right now?"
     if detected is not None:
         return detected
@@ -56,6 +58,7 @@ def _setup_environment() -> Path:
     """Prepare runtime-owned directories and return the concrete scheduler log file path."""
     dirs = _get_platform_dirs()
     log_dir = Path(dirs.user_log_dir)
+    # Runtime setup is allowed to mutate the filesystem because "setup" is the responsibility name.
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / "scheduler.log"
 
@@ -131,8 +134,7 @@ def setup_logger(file_log: Path) -> None:
 # ============================================
 # Backward-compatible aliases - old names
 # ============================================
-_get_platform_dirs = get_platform_dirs
-_is_dev_env = is_dev_env
-_get_local_timezone = get_local_timezone
+# Do not alias names that already exist as private implementations.
+# Rebinding `_get_local_timezone = get_local_timezone` makes the public wrapper
+# call itself forever, which causes RecursionError.
 _setup_env = setup_environment
-_setup_logger = setup_logger
