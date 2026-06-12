@@ -43,7 +43,7 @@ scheduler_3/
 ├── boundary/scheduler.py
 ├── application/application.py
 ├── core/job_models.py, lifecycle_models.py
-├── adapters/database_adapter.py, platform_adapter.py, process_adapter.py, runtime_support.py, service_adapter.py
+├── adapters/database_adapter.py, hosting_adapter.py, platform_adapter.py, process_adapter.py, runtime_support.py, service_adapter.py
 ├── workers/scheduler_daemon.py
 └── README.md
 ```
@@ -56,7 +56,7 @@ scraper_4/
 ├── validation/validation.py
 ├── application/application.py
 ├── core/models.py, product_adapter.py
-├── adapters/ai_adapter.py, browser_adapter.py, database_adapter.py, email_adapter.py, export_adapter.py, job_adapter.py, platform_adapter.py, runtime_support.py, trend_adapter.py
+├── adapters/ai_adapter.py, browser_adapter.py, database_adapter.py, email_adapter.py, export_adapter.py, hosting_adapter.py, job_adapter.py, platform_adapter.py, runtime_support.py, trend_adapter.py
 └── README.md
 ```
 
@@ -68,7 +68,7 @@ media_automation_6/
 ├── validation/validation.py
 ├── application/application.py
 ├── core/models.py
-├── adapters/ai_adapter.py, database_adapter.py, runtime_support.py, scheduler_adapter.py, social_adapter.py
+├── adapters/ai_adapter.py, database_adapter.py, hosting_adapter.py, runtime_support.py, scheduler_adapter.py, social_adapter.py
 └── README.md
 ```
 
@@ -80,7 +80,7 @@ lead_finder_7/
 ├── validation/validation.py
 ├── application/application.py
 ├── core/models.py
-├── adapters/ai_adapter.py, database_adapter.py, runtime_support.py, source_adapter.py
+├── adapters/ai_adapter.py, database_adapter.py, hosting_adapter.py, runtime_support.py, source_adapter.py
 └── README.md
 ```
 
@@ -92,6 +92,6 @@ secure_login_5/
 ├── validation/validation.py
 ├── application/application.py
 ├── core/models.py
-├── adapters/database_adapter.py, runtime_support.py, security_adapter.py
+├── adapters/database_adapter.py, hosting_adapter.py, runtime_support.py, security_adapter.py
 └── README.md
 ```

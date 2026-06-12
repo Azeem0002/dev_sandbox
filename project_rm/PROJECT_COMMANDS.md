@@ -18,6 +18,22 @@ Use this order for every project:
 
 See `PROJECT_TREE.md` for the recommended module directories when a project grows past flat files.
 
+## Hosting Map
+
+Use `hosting_adapter.py` for deployable API projects and always-on worker
+projects. Local OS-only tools use `process_adapter.py` or `service_adapter.py`
+instead.
+
+```text
+secure_login_5     -> host as API when real users need login/session access
+media_automation_6 -> host on an always-on server or pair API with an external scheduler
+lead_finder_7      -> host as API when buyers/sellers should be searched remotely
+scraper_4          -> optional API; recurring scraping is better as cron/GitHub Actions/VPS work
+scheduler_3        -> host on VPS/server as always-on worker, not laptop-only
+autoclear_2        -> local OS utility
+organizer_1        -> local CLI/file utility
+```
+
 ## Organizer
 
 ```bash
@@ -46,6 +62,7 @@ uv run --project .. python scheduler_3/scheduler.py list
 uv run --project .. python scheduler_3/scheduler.py status
 uv run --project .. python scheduler_3/scheduler.py start
 uv run --project .. python scheduler_3/scheduler.py stop
+uv run --project .. python -c "from scheduler_3.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
 Command validation note:
@@ -71,8 +88,8 @@ uv run --project .. python scraper_4/scraper.py history
 Optional API boundary:
 
 ```bash
-cd scraper_4
-uv run --project ../.. uvicorn api:app --reload
+uv run --project .. uvicorn scraper_4.api:app --reload
+uv run --project .. python -c "from scraper_4.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
 ## Secure Login 5
@@ -81,6 +98,7 @@ API entrypoint:
 
 ```bash
 uv run --project .. uvicorn secure_login_5.api:app --reload
+uv run --project .. python -c "from secure_login_5.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
 Common checks:
@@ -97,6 +115,7 @@ API entrypoint:
 
 ```bash
 uv run --project .. uvicorn media_automation_6.api:app --reload
+uv run --project .. python -c "from media_automation_6.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
 Common checks:
@@ -115,6 +134,7 @@ API entrypoint:
 
 ```bash
 uv run --project .. uvicorn lead_finder_7.api:app --reload
+uv run --project .. python -c "from lead_finder_7.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
 Common checks:
