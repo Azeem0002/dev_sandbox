@@ -1,130 +1,110 @@
 # Project Commands
 
-Run these commands from the repo root:
+Run these commands from the project folder while using the shared root uv environment:
 
 ```bash
 cd /home/az/dev_sandbox/project_rm
 ```
 
-## Scheduler
+## Learning Map
 
-CLI entrypoint:
+Use this order for every project:
+
+1. Core vocabulary: `models.py`, `*_models.py`
+2. Validation/parsing: `validation.py`
+3. Application/orchestration: `application.py`
+4. Adapters/infrastructure: `*_adapter.py`, `runtime_support.py`
+5. Boundary/entrypoints: `organizer.py`, `controller.py`, `scheduler.py`, `scraper.py`, `api.py`
+
+See `PROJECT_TREE.md` for the recommended module directories when a project grows past flat files.
+
+## Organizer
 
 ```bash
-python3 scheduler_3/scheduler.py --help
+uv run --project .. python organizer_1/organizer.py --help
+uv run --project .. python organizer_1/organizer.py analyze /path/to/folder
+uv run --project .. python organizer_1/organizer.py organize /path/to/folder
+uv run --project .. python organizer_1/organizer.py backup /path/to/folder --list
 ```
 
-Common commands:
+## Autoclear
 
 ```bash
-python3 scheduler_3/scheduler.py add --interactive
-python3 scheduler_3/scheduler.py add --name "Daily list" --command "ls" --type weekly --days 1,2,3,4,5 --time 09:00
-python3 scheduler_3/scheduler.py add --name "One-time check" --command "python3 --version" --type once --time "2026-06-07T09:00:00+01:00"
-python3 scheduler_3/scheduler.py list
-python3 scheduler_3/scheduler.py list --verbose
-python3 scheduler_3/scheduler.py start
-python3 scheduler_3/scheduler.py start --foreground
-python3 scheduler_3/scheduler.py status
-python3 scheduler_3/scheduler.py pause JOB_ID_OR_NAME
-python3 scheduler_3/scheduler.py resume JOB_ID_OR_NAME
-python3 scheduler_3/scheduler.py remove JOB_ID_OR_NAME
-python3 scheduler_3/scheduler.py remove JOB_ID_OR_NAME --force
-python3 scheduler_3/scheduler.py stop
-python3 scheduler_3/scheduler.py install
-python3 scheduler_3/scheduler.py install --system
+uv run --project .. python autoclear_2/controller.py --help
+uv run --project .. python autoclear_2/controller.py status
+uv run --project .. python autoclear_2/controller.py start --interval 10s
+uv run --project .. python autoclear_2/controller.py stop
+uv run --project .. python autoclear_2/autoclear.py --once
+```
+
+## Scheduler
+
+```bash
+uv run --project .. python scheduler_3/scheduler.py --help
+uv run --project .. python scheduler_3/scheduler.py add --interactive
+uv run --project .. python scheduler_3/scheduler.py list
+uv run --project .. python scheduler_3/scheduler.py status
+uv run --project .. python scheduler_3/scheduler.py start
+uv run --project .. python scheduler_3/scheduler.py stop
 ```
 
 Command validation note:
 
 ```bash
-python3 scheduler_3/scheduler.py add --name "Bad" --command "proj" --type weekly --days 1 --time 09:00
-```
-
-The scheduler checks the first command word with `shutil.which(...)`.
-Installed executables like `ls`, `python`, or `python3` resolve through `PATH`; unknown names like `proj` fail.
-
-## Autoclear
-
-Controller entrypoint:
-
-```bash
-python3 autoclear_2/controller.py --help
-```
-
-Common commands:
-
-```bash
-python3 autoclear_2/controller.py status
-python3 autoclear_2/controller.py start --interval 10s
-python3 autoclear_2/controller.py start --interval 5m
-python3 autoclear_2/controller.py restart --interval 1h
-python3 autoclear_2/controller.py stop
-python3 autoclear_2/controller.py install-service --interval 1h
-python3 autoclear_2/controller.py install-service --interval 1h --system
-```
-
-Worker entrypoint:
-
-```bash
-python3 autoclear_2/autoclear.py --once
-python3 autoclear_2/autoclear.py 3600
-```
-
-## Organizer
-
-CLI entrypoint:
-
-```bash
-python3 organizer_1/organizer.py --help
-```
-
-Common commands:
-
-```bash
-python3 organizer_1/organizer.py analyze /path/to/folder
-python3 organizer_1/organizer.py organize /path/to/folder
-python3 organizer_1/organizer.py organize /path/to/folder --interactive
-python3 organizer_1/organizer.py organize /path/to/folder --recursive
-python3 organizer_1/organizer.py organize /path/to/folder --no-dry-run --backup
-python3 organizer_1/organizer.py organize /path/to/folder --strategy rename
-python3 organizer_1/organizer.py backup /path/to/folder
-python3 organizer_1/organizer.py backup /path/to/folder --no-compress
-python3 organizer_1/organizer.py backup /path/to/folder --format zip
-python3 organizer_1/organizer.py backup /path/to/folder --backup-dir /path/to/backups
-python3 organizer_1/organizer.py backup /path/to/folder --list
-python3 organizer_1/organizer.py backup /path/to/folder --restore /path/to/backup.zip --restore-to /path/to/restore
+uv run --project .. python scheduler_3/scheduler.py add --name "Bad" --command "proj" --type weekly --days 1 --time 09:00
 ```
 
 ## Scraper 4
 
-CLI entrypoint:
-
 ```bash
-cd scraper_4
-uv run scraper --help
-```
-
-Common commands:
-
-```bash
-uv run scraper research --interactive
-uv run scraper trends --mode products --keyword laptop --region US --export csv
-uv run scraper trends --mode jobs --keyword python --region NG --export json
-uv run scraper scrape "https://example.com" --mode products --export csv
-uv run scraper scrape "https://example.com" --browser --selector "a" --mode products
-uv run scraper history
-```
-
-Install shortcut for use from anywhere:
-
-```bash
-uv tool install /home/az/dev_sandbox/project_rm/scraper_4
-scraper --help
+uv run --project .. python scraper_4/scraper.py --help
+uv run --project .. python scraper_4/scraper.py research --interactive
+uv run --project .. python scraper_4/scraper.py trends --mode products --keyword laptop --region US --export csv
+uv run --project .. python scraper_4/scraper.py trends --mode products --region NG --broad-source exploratory --export csv
+uv run --project .. python scraper_4/scraper.py trends --mode jobs --keyword python --region NG --export json
+uv run --project .. python scraper_4/scraper.py recent-jobs --region NG --max-age-hours 72
+uv run --project .. python scraper_4/scraper.py notify-products --keyword phone --region NG
+uv run --project .. python scraper_4/scraper.py arbitrage --source-cost 12000 --sell-price 20000 --shipping-cost 1500 --platform-fee 1000 --ad-cost 2000
+uv run --project .. python scraper_4/scraper.py history
 ```
 
 Optional API boundary:
 
 ```bash
 cd scraper_4
-uv run uvicorn api:app --reload
+uv run --project ../.. uvicorn api:app --reload
+```
+
+## Secure Login 5
+
+API entrypoint:
+
+```bash
+uv run --project .. uvicorn secure_login_5.api:app --reload
+```
+
+Common checks:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/register -H "Content-Type: application/json" -d '{"email":"az@example.com","password":"Password123"}'
+curl -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d '{"email":"az@example.com","password":"Password123"}'
+```
+
+## Media Automation 6
+
+API entrypoint:
+
+```bash
+uv run --project .. uvicorn media_automation_6.api:app --reload
+```
+
+Common checks:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/generate -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
+curl -X POST http://127.0.0.1:8000/posts -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
+curl -X POST http://127.0.0.1:8000/automation/start -H "Content-Type: application/json" -d '{"interval_minutes":30,"dry_run":true}'
+curl http://127.0.0.1:8000/automation/status
 ```

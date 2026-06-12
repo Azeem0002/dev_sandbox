@@ -11,6 +11,9 @@ import sys
 # Platform adapter - reusable mental map
 # ============================================
 
+# ============================================
+# Shared private skeleton - start reading here
+# ============================================
 def _detect_platform_impl() -> str:
     """Normalize host platform names into the app's small platform vocabulary."""
     # Return a tiny app-owned vocabulary so higher layers branch on stable names,
