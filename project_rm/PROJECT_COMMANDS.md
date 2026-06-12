@@ -108,3 +108,19 @@ curl -X POST http://127.0.0.1:8000/posts -H "Content-Type: application/json" -d 
 curl -X POST http://127.0.0.1:8000/automation/start -H "Content-Type: application/json" -d '{"interval_minutes":30,"dry_run":true}'
 curl http://127.0.0.1:8000/automation/status
 ```
+
+## Lead Finder 7
+
+API entrypoint:
+
+```bash
+uv run --project .. uvicorn lead_finder_7.api:app --reload
+```
+
+Common checks:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/leads -H "Content-Type: application/json" -d '{"product":"phone accessories","region":"NG","intent":"both","max_results":6}'
+curl http://127.0.0.1:8000/history
+```
