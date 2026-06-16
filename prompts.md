@@ -27,9 +27,79 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. how to host by program on github action?
-2. 
+1. how to fix this:
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+  (commit or discard the untracked or modified content in submodules)
+        modified:   project_rm/scraper_4 (modified content, untracked content)
+2. what's the diff between my scheduler_3 project using apsheduler and gthub actions?
+3. tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ")
+* os time overrides python time correct meaning or program time overrides os time?
+* explain this in a much more simpler terms and analogy:
+"""Resolve the app's local timezone from explicit env override, then OS timezone, then UTC fallback."""
+4. what's the diff between zoneinfo and datetime?
+5. does this mean if os zoneinfo is not detected, then fallback to os datetime and if datetime is not detected, then fallback to zoneinfo utc?
+* give me example of zoneinfo
+def _get_local_timezone():
+    tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ")  * what's the diff between these two?
+    if tz_name: * should this be is tz_name is not None?
+        try:
+            return ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            logger.warning(f"Unknown timezone: {tz_name}")
+        
+    detected = datetime.now().astimezone().tzinfo
+    if detected is not None:
+        return detected
+    
+    return ZoneInfo("UTC")
+6. explain this message using simple  terms and analogy:
+def _get_worker_script_path() -> Path:
+    """Return the worker entry script path used by detached process and service backends."""
+    # One helper owns this path so process/service code does not duplicate worker entry knowledge.
+    return Path(__file__).with_name("autoclear.py").resolve()
+7. how to find what line of code exists in a project if there are many modules to search from through the terminal
+8. what's the diff between this:
+from src/autoclear import setup_env, setup_logger
+and this
+from .autoclear import setup_env, setup_logger
+* which is correct?
 
+from adapters/runtime_support import setup_env, setup_logger
+def init():
+    log_file =  setup_env() 
+    setup_logger(log_file)
+* Expected import error
+
+then:
+def init():
+    log_file =  setup_env()
+    setup_logger(log_file)
+* setup env and logger are not defined
+* using this .runtime_support import: err: runtime support could not be resolved
+* still same error after adding __init__.py in adapters and src
+* this is what i have in runtime_support:
+def setup_env()-> Path:
+    return _setup_env()
+
+def is_dev_env()-> bool:
+    return _is_dev_env()
+
+def setup_logger(log_file: Path):
+    return _setup_logger(log_file)
+
+* file_dir:
+(dev-sandbox) az@debian:~/task_automator/src$ ls
+adapters  autoclear.py  __init__.py  __pycache__
+api       core          parsers      task_automator.egg-info
+9. how do i fix this git issue:
+* how do i track it?
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+  (commit or discard the untracked or modified content in submodules)
+        modified:   scraper_4 (modified content, untracked content)
 
 
 
@@ -39,8 +109,9 @@
 # Update PROJECT_COMMANDS.md if needed
 
 1. i have 4 projects, how do i know what to learn or where to start learning from or what not to waste or pay too much time/attention on?  
-2. 
 
+        
+4. 
 
             
 

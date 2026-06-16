@@ -1,4 +1,4 @@
-"""Small lifecycle/status models shared by autoclear boundary and application code."""
+    """Small lifecycle/status models shared by autoclear boundary and application code."""
 
 from dataclasses import dataclass
 from pathlib import Path

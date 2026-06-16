@@ -5,9 +5,9 @@ These trees show the recommended directory home for each module when a project g
 ```text
 boundary/     -> CLI, API, webhook, GUI entrypoints
 validation/   -> raw input parsing and cleanup
-application/  -> public use-cases that coordinate work
+application/  -> public use-cases that coordinate work  
 core/         -> app vocabulary, DTOs, domain rules, pure logic
-adapters/     -> DB, OS, files, network, email, logging, service/process I/O
+adapters/     -> DB, OS, files, network, email, logging, service/process I/O  ### external systems 
 workers/      -> long-running loops or background executables
 tests/        -> automated checks
 ```
@@ -18,7 +18,7 @@ tests/        -> automated checks
 organizer_1/
 ├── boundary/organizer.py
 ├── validation/validation.py
-├── application/application.py
+├── app/application.py
 ├── core/models.py, file_utils.py, organize_service.py, backup_service.py
 ├── adapters/runtime_support.py
 └── README.md
@@ -29,7 +29,7 @@ organizer_1/
 ```text
 autoclear_2/
 ├── boundary/controller.py
-├── application/application.py
+├── app/application.py
 ├── core/lifecycle_models.py
 ├── adapters/platform_adapter.py, process_adapter.py, runtime_support.py, service_adapter.py
 ├── workers/autoclear.py
