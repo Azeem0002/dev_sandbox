@@ -9,9 +9,9 @@ from datetime import datetime
 from enum import StrEnum
 
 try:
-    from .runtime_support import get_local_timezone
+    from .runtime_adapter import get_local_timezone
 except ImportError:
-    from runtime_support import get_local_timezone
+    from runtime_adapter import get_local_timezone
 
 # Shared timezone anchor for schedule parsing/formatting.
 # The scheduler and database adapter both depend on this meaning.

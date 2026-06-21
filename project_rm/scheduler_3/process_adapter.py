@@ -13,9 +13,9 @@ import psutil
 from loguru import logger
 
 try:
-    from .runtime_support import get_platform_dirs
+    from .runtime_adapter import get_platform_dirs
 except ImportError:
-    from runtime_support import get_platform_dirs
+    from runtime_adapter import get_platform_dirs
 
 
 # ============================================
@@ -108,7 +108,7 @@ def _remove_pid_file() -> None:
     pid_file.unlink(missing_ok=True)
 
 
-def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
+def _get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None:
     # Without *, you could accidentally pass positional arguments. With *, the caller MUST be explicit about what True means.
 
     """Return the active scheduler PID only when the PID file points to a real managed process."""
@@ -133,7 +133,7 @@ def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
 
 def _spawn_detached_process() -> int:
     """Launch the scheduler in a detached child process and wait until it proves it started."""
-    existing_pid = _get_active_process_pid()
+    existing_pid = _get_active_process_pid_status()
     if existing_pid is not None:
         raise RuntimeError(f"Scheduler is already running (PID {existing_pid})")
 
@@ -157,7 +157,7 @@ def _spawn_detached_process() -> int:
     deadline = time.time() + 5  # current timestamp for checking repeatedly within 5 seconds active wait.
     # time.sleep(5): not recommended here.that would be blind waiting
     while time.time() < deadline:  # "Keep checking until deadline"
-        active_pid = _get_active_process_pid(warn_on_invalid=False)
+        active_pid = _get_active_process_pid_status(warn_on_invalid=False)
         # "Check PID file (don't warn if missing)" → check if scheduler started
 
         if active_pid is not None: # explicitly checking for existence with None
@@ -180,7 +180,7 @@ def _read_interval_from_process(process: psutil.Process) -> int | None:
 
 def _stop_process(wait: bool = True) -> bool:
     """Stop the running scheduler process and optionally wait for a clean exit."""
-    active_pid = _get_active_process_pid()
+    active_pid = _get_active_process_pid_status()
     if active_pid is None:
         logger.info("Scheduler is not running")
         return False
@@ -245,9 +245,9 @@ def remove_pid_file() -> None:
     _remove_pid_file()
 
 
-def get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
+def get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None:
     """Public wrapper for resolving the currently running scheduler PID."""
-    return _get_active_process_pid(warn_on_invalid=warn_on_invalid)
+    return _get_active_process_pid_status(warn_on_invalid=warn_on_invalid)
 
 
 def spawn_detached_process(*, interval_secs: int | None = None) -> int:

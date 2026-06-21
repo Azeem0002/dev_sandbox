@@ -11,7 +11,7 @@ Cross-platform terminal autoclear worker with process and system service support
 - Boundary: `controller.py`
 - Application: `application.py`
 - Core/worker logic: `autoclear.py`, `lifecycle_models.py`
-- External/OS adapters: `process_adapter.py`, `platform_adapter.py`, `service_adapter.py`, `runtime_support.py`
+- External/OS adapters: `process_adapter.py`, `platform_adapter.py`, `service_adapter.py`, `systemd_adapter.py`, `task_scheduler_adapter.py`, `runtime_adapter.py`
 
 ## Reusable Patterns
 - Human interval parsing
@@ -39,4 +39,15 @@ Input -> Validate interval -> Detect platform -> Start/stop/status backend -> Lo
 2. `application.py`
 3. `process_adapter.py`
 4. `service_adapter.py`
-5. `controller.py`
+5. `systemd_adapter.py`
+6. `task_scheduler_adapter.py`
+7. `controller.py`
+
+## Developer Contact
+
+For reviews, custom automation, or partnership discussions, show the developer contact in the product/docs through configurable values:
+
+```text
+Email: DEV_CONTACT_EMAIL
+WhatsApp: DEV_CONTACT_WHATSAPP
+```

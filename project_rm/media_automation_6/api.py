@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """FastAPI boundary for media_automation_6."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 try:
     from .application import generate_post_idea, get_automation_status, list_posts, publish_due_posts, publish_one_post, schedule_post, start_automation, stop_automation
     from .database_adapter import init_db
-    from .runtime_support import setup_environment, setup_logger
-    from .validation import build_content_idea_request, build_schedule_request
+    from .runtime_adapter import setup_environment, setup_logger
+    from .user_auth_adapter import require_authenticated_user
+    from .validation import build_content_idea_request, build_schedule_request, normalize_interval_minutes
 except ImportError:
     from application import generate_post_idea, get_automation_status, list_posts, publish_due_posts, publish_one_post, schedule_post, start_automation, stop_automation
     from database_adapter import init_db
-    from runtime_support import setup_environment, setup_logger
-    from validation import build_content_idea_request, build_schedule_request
+    from runtime_adapter import setup_environment, setup_logger
+    from user_auth_adapter import require_authenticated_user
+    from validation import build_content_idea_request, build_schedule_request, normalize_interval_minutes
 
 
 class GeneratePayload(BaseModel):
@@ -32,7 +34,7 @@ class SchedulePayload(GeneratePayload):
 
 class AutomationPayload(BaseModel):
     """HTTP request body for starting background automation."""
-    interval_minutes: int = 30
+    interval_minutes: int | str = "30m"
     dry_run: bool = True
 
 
@@ -68,6 +70,14 @@ def _post_to_dict(post) -> dict:
     }
 
 
+def _require_user(authorization: str | None) -> None:
+    """Require login for paid/user-owned API actions."""
+    try:
+        require_authenticated_user(authorization)
+    except ValueError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Return a small liveness response."""
@@ -75,9 +85,10 @@ def health() -> dict[str, str]:
 
 
 @app.post("/generate")
-def generate(payload: GeneratePayload) -> dict[str, str]:
+def generate(payload: GeneratePayload, authorization: str | None = Header(default=None)) -> dict[str, str]:
     """Generate a social media post draft."""
     try:
+        _require_user(authorization)
         request = build_content_idea_request(topic=payload.topic, platform=payload.platform, tone=payload.tone, audience=payload.audience, goal=payload.goal)
         return {"content": generate_post_idea(request)}
     except ValueError as error:
@@ -85,9 +96,10 @@ def generate(payload: GeneratePayload) -> dict[str, str]:
 
 
 @app.post("/posts")
-def create_post(payload: SchedulePayload) -> dict:
+def create_post(payload: SchedulePayload, authorization: str | None = Header(default=None)) -> dict:
     """Generate and schedule one post."""
     try:
+        _require_user(authorization)
         request = build_schedule_request(topic=payload.topic, platform=payload.platform, tone=payload.tone, audience=payload.audience, goal=payload.goal, scheduled_at=payload.scheduled_at)
         return _post_to_dict(schedule_post(request))
     except ValueError as error:
@@ -95,45 +107,52 @@ def create_post(payload: SchedulePayload) -> dict:
 
 
 @app.get("/posts")
-def posts(limit: int = 20) -> list[dict]:
+def posts(limit: int = 20, authorization: str | None = Header(default=None)) -> list[dict]:
     """Return recent saved posts."""
+    _require_user(authorization)
     return [_post_to_dict(post) for post in list_posts(limit)]
 
 
 @app.post("/posts/{post_id}/publish")
-def publish(post_id: str, dry_run: bool = True) -> dict:
+def publish(post_id: str, dry_run: bool = True, authorization: str | None = Header(default=None)) -> dict:
     """Publish one post now, using dry-run by default."""
     try:
+        _require_user(authorization)
         return _post_to_dict(publish_one_post(post_id, dry_run=dry_run))
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.post("/publish-due")
-def publish_due(dry_run: bool = True) -> list[dict]:
+def publish_due(dry_run: bool = True, authorization: str | None = Header(default=None)) -> list[dict]:
     """Publish all due scheduled posts now."""
+    _require_user(authorization)
     return [_post_to_dict(post) for post in publish_due_posts(dry_run=dry_run)]
 
 
 @app.post("/automation/start")
-def automation_start(payload: AutomationPayload) -> dict:
+def automation_start(payload: AutomationPayload, authorization: str | None = Header(default=None)) -> dict:
     """Start recurring background publishing checks."""
     try:
-        status = start_automation(interval_minutes=payload.interval_minutes, dry_run=payload.dry_run)
+        _require_user(authorization)
+        interval_minutes = normalize_interval_minutes(payload.interval_minutes)
+        status = start_automation(interval_minutes=interval_minutes, dry_run=payload.dry_run)
         return {"running": status.running, "scheduled_jobs": status.scheduled_jobs}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/automation/stop")
-def automation_stop() -> dict:
+def automation_stop(authorization: str | None = Header(default=None)) -> dict:
     """Stop recurring background publishing checks."""
+    _require_user(authorization)
     status = stop_automation()
     return {"running": status.running, "scheduled_jobs": status.scheduled_jobs}
 
 
 @app.get("/automation/status")
-def automation_status() -> dict:
+def automation_status(authorization: str | None = Header(default=None)) -> dict:
     """Return background scheduler status."""
+    _require_user(authorization)
     status = get_automation_status()
     return {"running": status.running, "scheduled_jobs": status.scheduled_jobs}

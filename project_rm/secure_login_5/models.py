@@ -19,6 +19,11 @@ class LoginUserDTO(BaseModel):
     password: str
 
 
+class GoogleLoginDTO(BaseModel):
+    """HTTP input for Google login."""
+    id_token: str
+
+
 class TokenDTO(BaseModel):
     """HTTP output containing a bearer access token."""
     access_token: str
@@ -40,6 +45,16 @@ class User:
     email: str
     password_hash: str
     created_at: datetime
+    google_sub: str | None = None
+
+
+@dataclass(frozen=True)
+class GoogleIdentity:
+    """Verified Google identity returned by the auth adapter."""
+    google_sub: str
+    email: str
+    display_name: str
+    avatar_url: str | None = None
 
 
 @dataclass

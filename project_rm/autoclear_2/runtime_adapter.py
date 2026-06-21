@@ -35,7 +35,7 @@ def _get_platform_dirs() -> PlatformDirs:
 
 def _get_local_timezone():
     """Resolve the app's local timezone from explicit env override, then OS timezone, then UTC fallback."""
-    tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ")  # env override first, system TZ second
+    tz_name = os.getenv("APP_LOCAL_TZ") or os.getenv("TZ")  # user overrides first, OS TZ second
     if tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -57,6 +57,7 @@ def _get_worker_script_path() -> Path:
     """Return the worker entry script path used by detached process and service backends."""
     # One helper owns this path so process/service code does not duplicate worker entry knowledge.
     return Path(__file__).with_name("autoclear.py").resolve()
+# Why "one helper": If the worker script name changes, you only update this ONE function, not everywhere it's referenced.
 
 
 

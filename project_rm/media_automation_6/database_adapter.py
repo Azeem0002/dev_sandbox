@@ -12,10 +12,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 try:
     from .models import PostStatus, SocialPlatform, SocialPost
-    from .runtime_support import get_platform_dirs
+    from .runtime_adapter import get_platform_dirs
 except ImportError:
     from models import PostStatus, SocialPlatform, SocialPost
-    from runtime_support import get_platform_dirs
+    from runtime_adapter import get_platform_dirs
 
 
 # ============================================

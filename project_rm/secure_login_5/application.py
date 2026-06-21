@@ -4,12 +4,14 @@ from datetime import datetime, timedelta, timezone
 import uuid
 
 try:
-    from .database_adapter import fetch_session_by_token_id, fetch_user_by_email, fetch_user_by_id, insert_session, insert_user, revoke_session
-    from .models import AuthResult, AuthSession, LoginUserDTO, RegisterUserDTO, User, UserDTO
+    from .database_adapter import fetch_session_by_token_id, fetch_user_by_email, fetch_user_by_id, insert_session, insert_user, revoke_session, upsert_google_user
+    from .google_auth_adapter import verify_google_id_token
+    from .models import AuthResult, AuthSession, GoogleLoginDTO, LoginUserDTO, RegisterUserDTO, User, UserDTO
     from .security_adapter import create_access_token, create_token_id, decode_access_token, get_access_token_seconds, hash_password, verify_password
 except ImportError:
-    from database_adapter import fetch_session_by_token_id, fetch_user_by_email, fetch_user_by_id, insert_session, insert_user, revoke_session
-    from models import AuthResult, AuthSession, LoginUserDTO, RegisterUserDTO, User, UserDTO
+    from database_adapter import fetch_session_by_token_id, fetch_user_by_email, fetch_user_by_id, insert_session, insert_user, revoke_session, upsert_google_user
+    from google_auth_adapter import verify_google_id_token
+    from models import AuthResult, AuthSession, GoogleLoginDTO, LoginUserDTO, RegisterUserDTO, User, UserDTO
     from security_adapter import create_access_token, create_token_id, decode_access_token, get_access_token_seconds, hash_password, verify_password
 
 
@@ -59,6 +61,12 @@ def login_user(data: LoginUserDTO) -> AuthResult:
     if user is None or not verify_password(data.password, user.password_hash):
         raise ValueError("Invalid email or password")
     return _build_auth_result(user)
+
+
+def login_with_google(data: GoogleLoginDTO) -> AuthResult:
+    """Authenticate a Google ID token and create a new session/token."""
+    identity = verify_google_id_token(data.id_token)
+    return _build_auth_result(upsert_google_user(identity, _utc_now()))
 
 
 def get_current_user(access_token: str) -> UserDTO:

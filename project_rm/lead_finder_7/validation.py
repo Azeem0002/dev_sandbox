@@ -31,6 +31,20 @@ def normalize_region(value: str) -> str:
     return cleaned
 
 
+def normalize_optional_city(value: str | None) -> str | None:
+    """Normalize an optional city name for more focused local searches."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 80:
+        raise ValueError("city must be 80 characters or less")
+    if not any(char.isalpha() for char in cleaned):
+        raise ValueError("city must include at least one letter")
+    return " ".join(cleaned.split())
+
+
 def parse_lead_intent(value: str) -> LeadIntent:
     """Parse user/API text into a supported lead intent."""
     return LeadIntent(value.strip().lower())
@@ -45,11 +59,12 @@ def normalize_max_results(value: int) -> int:
     return value
 
 
-def build_lead_search_request(*, product: str, region: str, intent: str, max_results: int) -> LeadSearchRequest:
+def build_lead_search_request(*, product: str, region: str, intent: str, max_results: int, city: str | None = None) -> LeadSearchRequest:
     """Build clean lead-search input from raw boundary values."""
     return LeadSearchRequest(
         product=normalize_product(product),
         region=normalize_region(region),
+        city=normalize_optional_city(city),
         intent=parse_lead_intent(intent),
         max_results=normalize_max_results(max_results),
     )

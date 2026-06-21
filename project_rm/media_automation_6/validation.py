@@ -1,11 +1,17 @@
 """Validation/parsing helpers for media_automation_6."""
 
 from datetime import datetime, timezone
+from math import ceil
+
+import pytimeparse
 
 try:
     from .models import ContentIdeaRequest, ScheduleRequest, SocialPlatform, Tone
 except ImportError:
     from models import ContentIdeaRequest, ScheduleRequest, SocialPlatform, Tone
+
+
+MIN_DURATION_SECONDS = 60
 
 
 def _normalize_required_text(value: str, field_name: str, *, max_length: int = 280) -> str:
@@ -26,6 +32,54 @@ def parse_social_platform(value: str) -> SocialPlatform:
 def parse_tone(value: str) -> Tone:
     """Parse user/API text into a supported AI writing tone."""
     return Tone(value.strip().lower())
+
+
+def parse_duration_seconds(value: int | str, *, field_name: str = "duration") -> int:
+    """Parse flexible time input like `3d`, `1m`, `1h 30m`, or plain seconds."""
+    if isinstance(value, int):
+        seconds = value
+    elif isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError(f"{field_name} cannot be empty")
+        if cleaned.isdigit():
+            seconds = int(cleaned)
+        else:
+            parsed = pytimeparse.parse(cleaned)
+            if parsed is None:
+                raise ValueError(f"Invalid {field_name}: {value}")
+            seconds = int(parsed)
+    else:
+        raise ValueError(f"{field_name} must be a number or time expression")
+
+    if seconds < MIN_DURATION_SECONDS:
+        raise ValueError(f"{field_name} must be at least 1 minute")
+    return seconds
+
+
+def parse_duration_minutes(value: int | str, *, field_name: str = "duration") -> int:
+    """Parse human time input and return whole minutes, rounding up partial minutes."""
+    if isinstance(value, int):
+        minutes = value
+    elif isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned.isdigit():
+            minutes = int(cleaned)
+        else:
+            minutes = ceil(parse_duration_seconds(cleaned, field_name=field_name) / 60)
+    else:
+        raise ValueError(f"{field_name} must be a number or time expression")
+    return minutes
+
+
+def normalize_interval_minutes(value: int | str) -> int:
+    """Clamp automation polling interval to a practical scheduler range."""
+    minutes = parse_duration_minutes(value, field_name="interval_minutes")
+    if minutes < 1:
+        raise ValueError("interval_minutes must be at least 1")
+    if minutes > 1440:
+        raise ValueError("interval_minutes must be 1440 or less")
+    return minutes
 
 
 def parse_optional_datetime(value: str | None) -> datetime | None:

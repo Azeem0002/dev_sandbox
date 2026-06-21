@@ -11,7 +11,7 @@ Read in this order:
 3. `application.py`
 4. `security_adapter.py`
 5. `database_adapter.py`
-6. `runtime_support.py`
+6. `runtime_adapter.py`
 7. `api.py`
 
 ## Commands
@@ -32,3 +32,12 @@ export SECURE_LOGIN_JWT_SECRET="replace-with-long-random-secret"
 ```
 
 For production, replace the stdlib JWT/PBKDF2 adapter with audited libraries when budget allows.
+
+## Developer Contact
+
+For reviews, auth integration help, or partnership discussions, show the developer contact in the product/docs through configurable values:
+
+```text
+Email: DEV_CONTACT_EMAIL
+WhatsApp: DEV_CONTACT_WHATSAPP
+```

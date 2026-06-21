@@ -21,7 +21,7 @@ Read in this order:
 4. `source_adapter.py`
 5. `ai_adapter.py`
 6. `database_adapter.py`
-7. `runtime_support.py`
+7. `runtime_adapter.py`
 8. `api.py`
 
 ## Commands
@@ -36,3 +36,12 @@ curl http://127.0.0.1:8000/history
 ## Safety Rule
 
 This project finds lead targets. It does not automate spam outreach. Real outreach should be manual or permission-based until you have clear platform/API compliance.
+
+## Developer Contact
+
+For reviews, custom lead workflows, or partnership discussions, show the developer contact in the product/docs through configurable values:
+
+```text
+Email: DEV_CONTACT_EMAIL
+WhatsApp: DEV_CONTACT_WHATSAPP
+```

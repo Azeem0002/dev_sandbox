@@ -30,16 +30,16 @@ def _build_public_search_url(query: str) -> str:
 def _intent_queries(request: LeadSearchRequest) -> tuple[tuple[LeadIntent, LeadSource, str], ...]:
     """Build buyer/seller discovery queries without hardcoded hidden products."""
     product = request.product
-    region = request.region
+    location = f"{request.city} {request.region}" if request.city else request.region
     buyer_queries = (
-        (LeadIntent.BUYERS, LeadSource.SEARCH, f'people looking to buy "{product}" {region}'),
-        (LeadIntent.BUYERS, LeadSource.SOCIAL, f'"want to buy" "{product}" {region}'),
-        (LeadIntent.BUYERS, LeadSource.MARKETPLACE, f'"buy {product}" marketplace {region}'),
+        (LeadIntent.BUYERS, LeadSource.SEARCH, f'people looking to buy "{product}" {location}'),
+        (LeadIntent.BUYERS, LeadSource.SOCIAL, f'"want to buy" "{product}" {location}'),
+        (LeadIntent.BUYERS, LeadSource.MARKETPLACE, f'"buy {product}" marketplace {location}'),
     )
     seller_queries = (
-        (LeadIntent.SELLERS, LeadSource.SEARCH, f'"{product}" supplier distributor {region}'),
-        (LeadIntent.SELLERS, LeadSource.MARKETPLACE, f'"{product}" wholesale seller {region}'),
-        (LeadIntent.SELLERS, LeadSource.SOCIAL, f'"selling {product}" {region}'),
+        (LeadIntent.SELLERS, LeadSource.SEARCH, f'"{product}" supplier distributor {location}'),
+        (LeadIntent.SELLERS, LeadSource.MARKETPLACE, f'"{product}" wholesale seller {location}'),
+        (LeadIntent.SELLERS, LeadSource.SOCIAL, f'"selling {product}" {location}'),
     )
     if request.intent == LeadIntent.BUYERS:
         return buyer_queries
@@ -48,11 +48,12 @@ def _intent_queries(request: LeadSearchRequest) -> tuple[tuple[LeadIntent, LeadS
     return buyer_queries + seller_queries
 
 
-def _build_lead_target(product: str, region: str, intent: LeadIntent, source: LeadSource, query: str, rank: int) -> LeadTarget:
+def _build_lead_target(product: str, region: str, city: str | None, intent: LeadIntent, source: LeadSource, query: str, rank: int) -> LeadTarget:
     """Convert one query into a lead target row."""
     return LeadTarget(
         product=product,
         region=region,
+        city=city,
         intent=intent,
         source=source,
         title=query,
@@ -69,6 +70,6 @@ def _build_lead_target(product: str, region: str, intent: LeadIntent, source: Le
 def fetch_public_lead_targets(request: LeadSearchRequest) -> list[LeadTarget]:
     """Build public buyer/seller lead targets for one product and region."""
     return [
-        _build_lead_target(request.product, request.region, intent, source, query, index)
+        _build_lead_target(request.product, request.region, request.city, intent, source, query, index)
         for index, (intent, source, query) in enumerate(_intent_queries(request), start=1)
     ][:request.max_results]

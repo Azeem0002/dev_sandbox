@@ -54,14 +54,14 @@ try:
     from .lifecycle_models import SchedulerStatus
     from .platform_adapter import detect_platform
     from .process_adapter import (
-        get_active_process_pid,
+        get_active_process_pid_status,
         get_pid_file_path,
         remove_pid_file,
         spawn_detached_process,
         stop_process,
         write_pid_file,
     )
-    from .runtime_support import get_local_timezone, is_dev_env, setup_environment, setup_logger
+    from .runtime_adapter import get_local_timezone, is_dev_env, setup_environment, setup_logger
     from .service_adapter import install_service
 except ImportError:
     from database_adapter import (
@@ -84,14 +84,14 @@ except ImportError:
     from lifecycle_models import SchedulerStatus
     from platform_adapter import detect_platform
     from process_adapter import (
-        get_active_process_pid,
+        get_active_process_pid_status,
         get_pid_file_path, 
         remove_pid_file,
         spawn_detached_process,
         stop_process,
         write_pid_file,
     )
-    from runtime_support import get_local_timezone, is_dev_env, setup_environment, setup_logger
+    from runtime_adapter import get_local_timezone, is_dev_env, setup_environment, setup_logger
     from service_adapter import install_service
 
 class AppConfig(BaseModel):

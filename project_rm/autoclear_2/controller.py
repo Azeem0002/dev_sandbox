@@ -18,7 +18,7 @@ try:
         stop_autoclear,
     )
     from .lifecycle_models import AutoclearStatus
-    from .runtime_support import is_dev_env, setup_environment, setup_logger
+    from .runtime_adapter import is_dev_env, setup_environment, setup_logger
 except ImportError:
     from application import (
         get_autoclear_status,
@@ -28,7 +28,7 @@ except ImportError:
         stop_autoclear,
     )
     from lifecycle_models import AutoclearStatus
-    from runtime_support import is_dev_env, setup_environment, setup_logger
+    from runtime_adapter import is_dev_env, setup_environment, setup_logger
 
 
 app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear controller")
@@ -76,7 +76,7 @@ def stop() -> None:
 
 
 @app.command()
-def start(interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 2h")) -> None:
+def start(interval: str = typer.Option("1h", "--interval", "-i", help="Interval e.g. 1m, 5m, 2h")) -> None:
     """Start the requested runtime path."""
     try:
         result = start_autoclear(interval)
@@ -89,7 +89,7 @@ def start(interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 
 
 
 @app.command()
-def restart(interval: str = typer.Option("1h", "-i", help="New interval (e.g. 600, 2h 30m)")) -> None:
+def restart(interval: str = typer.Option("1h", "--interval", "-i", help="New interval (e.g. 600, 2h 30m)")) -> None:
     """Restart the requested runtime path."""
     try:
         result = restart_autoclear(interval)
@@ -103,7 +103,7 @@ def restart(interval: str = typer.Option("1h", "-i", help="New interval (e.g. 60
 
 @app.command("install-service")
 def install_service(
-    interval: str = typer.Option("1h", "-i", help="Interval e.g. 10s, 5m, 2h"),
+    interval: str = typer.Option("1h", "--interval", "-i", help="Interval e.g. 1m, 5m, 2h"),
     system: bool = typer.Option(False, "--system", help="Install as system-level service on Linux"),
 ) -> None:
     """Install service."""

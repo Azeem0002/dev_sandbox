@@ -13,9 +13,11 @@ import psutil
 from loguru import logger
 
 try:
-    from .runtime_support import get_platform_dirs, get_worker_script_path
+    from .lifecycle_models import AutoclearStatus
+    from .runtime_adapter import get_platform_dirs, get_worker_script_path
 except ImportError:
-    from runtime_support import get_platform_dirs, get_worker_script_path
+    from lifecycle_models import AutoclearStatus
+    from runtime_adapter import get_platform_dirs, get_worker_script_path
 
 
 # ============================================
@@ -93,8 +95,9 @@ def _remove_pid_file() -> None:
     pid_file.unlink(missing_ok=True)
 
 
-def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
-    """Return the active autoclear PID only when the PID file points to a real managed worker."""
+def _get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None:
+    """Return the status of the active autoclear PID only when the PID file points to a real managed worker."""
+    # we'rechecking if pid is still alive and get it's details
     pid = _read_pid_file(warn_on_invalid=warn_on_invalid)
     if pid is None:
         return None
@@ -116,7 +119,7 @@ def _get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
 
 def _spawn_detached_process(interval_secs: int) -> int:
     """Launch the autoclear worker in the background and wait until startup becomes observable."""
-    existing_pid = _get_active_process_pid()
+    existing_pid = _get_active_process_pid_status()
     if existing_pid is not None:
         raise RuntimeError(f"Autoclear is already running (PID {existing_pid})")
 
@@ -131,12 +134,12 @@ def _spawn_detached_process(interval_secs: int) -> int:
         stdin=subprocess.DEVNULL,
         # start_new_session=True: detach child from the current terminal/session.
         start_new_session=True,
-        close_fds=True,  # "Close all file descriptors before running the child process."
+        close_fds=True,  # "Close all open file descriptors before running the child process."
     )
 
     deadline = time.time() + 5
     while time.time() < deadline:
-        active_pid = _get_active_process_pid(warn_on_invalid=False)
+        active_pid = _get_active_process_pid_status(warn_on_invalid=False)
         if active_pid is not None:
             return active_pid
 
@@ -165,9 +168,52 @@ def _read_interval_from_process(process: psutil.Process) -> int | None:
     return None
 
 
+def _build_stopped_process_status(detail: str, pid_file: Path) -> AutoclearStatus:
+    """Build the public status model for the process backend not-running case."""
+    # This is not a model definition. It is an adapter-side factory because
+    # "backend=process" and "pid_file=..." are process-backend details.
+    return AutoclearStatus(
+        backend="process",  # The status came from the detached-process backend, not systemd.
+        is_running=False,  # No valid managed worker process is currently alive.
+        pid=None,  # No process ID exists when the process is stopped.
+        interval_seconds=None,  # Interval is only discoverable from a running worker command line.
+        last_trigger=None,  # Detached process mode has no timer metadata like systemd does.
+        detail=detail,  # Human-facing reason, e.g. "Autoclear not running".
+        pid_file=pid_file,  # Show where the adapter looked when dev diagnostics are enabled.
+    )
+
+
+def _build_running_process_status(pid: int, pid_file: Path) -> AutoclearStatus:
+    """Build the public status model for the process backend alive case."""
+    # Resolve the PID into a process handle so we can inspect its command line.
+    process = _get_process(pid)
+    # The autoclear worker stores its interval as the last CLI argument.
+    interval = _read_interval_from_process(process) if process is not None else None
+    return AutoclearStatus(
+        backend="process",  # The status came from the detached-process backend.
+        is_running=True,  # PID file points to a live managed autoclear worker.
+        pid=pid,  # The OS process ID users may need for diagnostics.
+        interval_seconds=interval,  # Parsed from worker CLI args when available.
+        last_trigger=None,  # Process mode is a loop, not a timer trigger.
+        detail="Autoclear process backend running",
+        pid_file=pid_file,
+    )
+
+
+def _get_status_from_process() -> AutoclearStatus:
+    """Derive status from the detached worker-process backend."""
+    # Status starts from the PID file because that is how detached process mode remembers ownership.
+    pid_file = _get_pid_file_path()
+    # Do not warn during status checks; "not running" is a normal state.
+    active_pid = _get_active_process_pid_status(warn_on_invalid=False)
+    if active_pid is None:
+        return _build_stopped_process_status("Autoclear not running", pid_file)
+    return _build_running_process_status(active_pid, pid_file)
+
+
 def _stop_process(wait: bool = True) -> bool:
     """Stop the running autoclear worker and optionally wait for it to exit cleanly."""
-    active_pid = _get_active_process_pid()
+    active_pid = _get_active_process_pid_status()
     if active_pid is None:
         logger.info("Autoclear is not running")
         return False
@@ -185,11 +231,11 @@ def _stop_process(wait: bool = True) -> bool:
 
     if wait:
         try:
-            process.wait(timeout=10)
+            process.wait(timeout=5)
             _remove_pid_file()
             return True
         except psutil.TimeoutExpired:
-            logger.warning(f"Autoclear process {active_pid} did not exit within timeout")
+            logger.warning(f"Autoclear process {active_pid} did not exit within timeout. we're killing process")
             process.kill()
             process.wait(timeout=5)
             _remove_pid_file()
@@ -231,9 +277,14 @@ def remove_pid_file() -> None:
     _remove_pid_file()
 
 
-def get_active_process_pid(*, warn_on_invalid: bool = True) -> int | None:
+def get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None:
     """Public wrapper for resolving the currently running autoclear PID."""
-    return _get_active_process_pid(warn_on_invalid=warn_on_invalid)
+    return _get_active_process_pid_status(warn_on_invalid=warn_on_invalid)
+
+
+def get_status_from_process() -> AutoclearStatus:
+    """Public wrapper for deriving status from the detached process backend."""
+    return _get_status_from_process()
 
 
 def spawn_detached_process(*, interval_secs: int | None = None) -> int:

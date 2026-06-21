@@ -12,7 +12,7 @@ File organizer with backup, restore, validation, and crash-resume support.
 - Core models: `models.py`
 - Validation/parsing: `validation.py`
 - Reusable file helpers: `file_utils.py`
-- Runtime/logging: `runtime_support.py`
+- Runtime/logging: `runtime_adapter.py`
 - Application workflows: `organize_service.py`, `backup_service.py`
 
 ## Reusable Patterns
@@ -45,3 +45,12 @@ Input -> Validate -> Analyze/Backup/Organize -> Log -> Present
 4. `organize_service.py`
 5. `backup_service.py`
 6. `organizer.py`
+
+## Developer Contact
+
+For reviews, custom automation, or partnership discussions, show the developer contact in the product/docs through configurable values:
+
+```text
+Email: DEV_CONTACT_EMAIL
+WhatsApp: DEV_CONTACT_WHATSAPP
+```

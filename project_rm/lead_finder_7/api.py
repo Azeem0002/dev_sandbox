@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """FastAPI boundary for lead_finder_7."""
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
 try:
     from .application import find_leads, get_history
     from .database_adapter import init_db
-    from .runtime_support import setup_environment, setup_logger
+    from .runtime_adapter import setup_environment, setup_logger
+    from .user_auth_adapter import require_authenticated_user
     from .validation import build_lead_search_request
 except ImportError:
     from application import find_leads, get_history
     from database_adapter import init_db
-    from runtime_support import setup_environment, setup_logger
+    from runtime_adapter import setup_environment, setup_logger
+    from user_auth_adapter import require_authenticated_user
     from validation import build_lead_search_request
 
 
@@ -20,6 +22,7 @@ class LeadSearchPayload(BaseModel):
     """HTTP request body for buyer/seller lead discovery."""
     product: str
     region: str = "US"
+    city: str | None = None
     intent: str = "both"
     max_results: int = 10
 
@@ -43,6 +46,7 @@ def _lead_to_dict(item) -> dict:
     return {
         "product": item.product,
         "region": item.region,
+        "city": item.city,
         "intent": item.intent.value,
         "source": item.source.value,
         "title": item.title,
@@ -58,10 +62,19 @@ def _run_to_dict(run) -> dict:
     return {
         "product": run.product,
         "region": run.region,
+        "city": run.city,
         "intent": run.intent.value,
         "created_at": run.created_at.isoformat(),
         "leads": [_lead_to_dict(item) for item in run.leads],
     }
+
+
+def _require_user(authorization: str | None) -> None:
+    """Require login for paid/user-owned API actions."""
+    try:
+        require_authenticated_user(authorization)
+    except ValueError as error:
+        raise HTTPException(status_code=401, detail=str(error)) from error
 
 
 @app.get("/health")
@@ -71,12 +84,14 @@ def health() -> dict[str, str]:
 
 
 @app.post("/leads")
-def leads(payload: LeadSearchPayload) -> dict:
+def leads(payload: LeadSearchPayload, authorization: str | None = Header(default=None)) -> dict:
     """Find buyer/seller lead targets for one product."""
     try:
+        _require_user(authorization)
         request = build_lead_search_request(
             product=payload.product,
             region=payload.region,
+            city=payload.city,
             intent=payload.intent,
             max_results=payload.max_results,
         )
@@ -86,6 +101,7 @@ def leads(payload: LeadSearchPayload) -> dict:
 
 
 @app.get("/history")
-def history(limit: int = 20) -> list[dict]:
+def history(limit: int = 20, authorization: str | None = Header(default=None)) -> list[dict]:
     """Return recent saved lead runs."""
+    _require_user(authorization)
     return [_run_to_dict(run) for run in get_history(limit)]

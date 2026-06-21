@@ -4,16 +4,16 @@
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 try:
-    from .application import get_current_user, login_user, logout_user, register_user
+    from .application import get_current_user, login_user, login_with_google, logout_user, register_user
     from .database_adapter import init_db
-    from .models import LoginUserDTO, RegisterUserDTO, TokenDTO, UserDTO
-    from .runtime_support import setup_environment, setup_logger
+    from .models import GoogleLoginDTO, LoginUserDTO, RegisterUserDTO, TokenDTO, UserDTO
+    from .runtime_adapter import setup_environment, setup_logger
     from .validation import build_login_user_request, build_register_user_request
 except ImportError:
-    from application import get_current_user, login_user, logout_user, register_user
+    from application import get_current_user, login_user, login_with_google, logout_user, register_user
     from database_adapter import init_db
-    from models import LoginUserDTO, RegisterUserDTO, TokenDTO, UserDTO
-    from runtime_support import setup_environment, setup_logger
+    from models import GoogleLoginDTO, LoginUserDTO, RegisterUserDTO, TokenDTO, UserDTO
+    from runtime_adapter import setup_environment, setup_logger
     from validation import build_login_user_request, build_register_user_request
 
 
@@ -62,6 +62,16 @@ def login(payload: LoginUserDTO) -> TokenDTO:
     """Login a user and return a JWT access token."""
     try:
         result = login_user(build_login_user_request(payload))
+        return TokenDTO(access_token=result.access_token, expires_in_seconds=result.expires_in_seconds)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error
+
+
+@app.post("/auth/google", response_model=TokenDTO)
+def google_login(payload: GoogleLoginDTO) -> TokenDTO:
+    """Login with Google and return a JWT access token."""
+    try:
+        result = login_with_google(payload)
         return TokenDTO(access_token=result.access_token, expires_in_seconds=result.expires_in_seconds)
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(error)) from error

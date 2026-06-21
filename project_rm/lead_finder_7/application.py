@@ -29,7 +29,7 @@ def find_leads(request: LeadSearchRequest) -> LeadRun:
     """
     targets = fetch_public_lead_targets(request)
     ranked = rank_leads(targets)[:request.max_results]
-    run = LeadRun(product=request.product, region=request.region, intent=request.intent, leads=ranked)
+    run = LeadRun(product=request.product, region=request.region, city=request.city, intent=request.intent, leads=ranked)
     return insert_lead_run(run)
 
 

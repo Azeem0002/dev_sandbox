@@ -18,7 +18,6 @@ echo "# repo" >> README.md
 - commit -m "initial commit"  (Saves staged changes permanently in Git history) i.e “Lock this version as a checkpoint”
 - git remote add origin https://github.com/Azeem0002/calc.git
 - push -u origin main
-
 <!-- …or push an existing repository from the command line -->
 - remote add origin https://github.com/Azeem0002/calc.-
 - branch -M main
@@ -150,3 +149,9 @@ cp -r /boot/grub /boot/efi/EFI/BOOT/
 
 # 5. Reboot
 reboot
+
+## Find code in terminal
+
+- Search for text: grep -rn "setup_logger" .
+
+- Search function class/definitions: grep -rn "def setup_logger" or "class Job" .

@@ -38,9 +38,3 @@ def _detect_platform_impl() -> str:
 def detect_platform() -> str:
     """Public wrapper for host platform normalization."""
     return _detect_platform_impl()
-
-
-# ============================================
-# Backward-compatible aliases - old names
-# ============================================
-_detect_platform = detect_platform

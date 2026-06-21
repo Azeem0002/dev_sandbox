@@ -13,7 +13,7 @@ Read in this order:
 5. `database_adapter.py`
 6. `social_adapter.py`
 7. `scheduler_adapter.py`
-8. `runtime_support.py`
+8. `runtime_adapter.py`
 9. `api.py`
 
 ## MVP Decision
@@ -31,5 +31,14 @@ uv run --project .. uvicorn media_automation_6.api:app --reload
 curl http://127.0.0.1:8000/health
 curl -X POST http://127.0.0.1:8000/generate -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
 curl -X POST http://127.0.0.1:8000/posts -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
-curl -X POST http://127.0.0.1:8000/automation/start -H "Content-Type: application/json" -d '{"interval_minutes":30,"dry_run":true}'
+curl -X POST http://127.0.0.1:8000/automation/start -H "Content-Type: application/json" -d '{"interval_minutes":"30m","dry_run":true}'
+```
+
+## Developer Contact
+
+For reviews, custom content automation, or partnership discussions, show the developer contact in the product/docs through configurable values:
+
+```text
+Email: DEV_CONTACT_EMAIL
+WhatsApp: DEV_CONTACT_WHATSAPP
 ```

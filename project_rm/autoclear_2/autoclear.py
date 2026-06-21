@@ -15,19 +15,14 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 try:
-    from .runtime_support import setup_environment, setup_logger
+    from .lifecycle_models import AutoclearConfig
+    from .runtime_adapter import (setup_environment, setup_logger)
 except ImportError:
-    from runtime_support import setup_environment, setup_logger
+    from .lifecycle_models import AutoclearConfig
+    from runtime_adapter import setup_environment, setup_logger
 
 
-# ==========================
-# CONFIGURATIONS
-# ==========================
-@dataclass(frozen=True)
-class AutoclearConfig:
-    interval: int = 3600 # 1h
-    max_retries: int = 3
-    retry_delay: float = 1.0
+
 
 
 # =============================================================================
@@ -142,5 +137,5 @@ if __name__ == "__main__":
         config = AutoclearConfig(interval)
         run_autoclear(config) # expects AutoclearConfig
     except ValueError:
-        logger.info("Invalid time interval. (e.g. 10s, 5, 2h)")
+        logger.info("Invalid time interval. (e.g. 1m, 5m, 2h)")
         sys.exit(1)

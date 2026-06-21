@@ -22,7 +22,7 @@ try:
         format_job_id,
         serialize_scheduled_time_for_storage,
     )
-    from .runtime_support import get_platform_dirs
+    from .runtime_adapter import get_platform_dirs
 except ImportError:
     from job_models import (  # Absolute import (script)
         Job,
@@ -33,7 +33,7 @@ except ImportError:
         format_job_id,
         serialize_scheduled_time_for_storage,
     )
-    from runtime_support import get_platform_dirs
+    from runtime_adapter import get_platform_dirs
 
 
 # ============================================

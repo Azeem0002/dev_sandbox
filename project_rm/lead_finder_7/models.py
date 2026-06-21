@@ -25,6 +25,7 @@ class LeadSearchRequest:
     """Clean input for finding buyer/seller lead targets."""
     product: str
     region: str
+    city: str | None
     intent: LeadIntent
     max_results: int
 
@@ -34,6 +35,7 @@ class LeadTarget:
     """One buyer/seller lead target a human can inspect."""
     product: str
     region: str
+    city: str | None
     intent: LeadIntent
     source: LeadSource
     title: str
@@ -48,6 +50,7 @@ class LeadRun:
     """Full app-level result returned by orchestration."""
     product: str
     region: str
+    city: str | None
     intent: LeadIntent
     leads: list[LeadTarget] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.utcnow)

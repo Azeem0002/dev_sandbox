@@ -13,10 +13,10 @@ import psutil
 
 try:
     from .lifecycle_models import SchedulerStatus
-    from .process_adapter import get_active_process_pid, get_pid_file_path, remove_pid_file, stop_process, write_pid_file
+    from .process_adapter import get_active_process_pid_status, get_pid_file_path, remove_pid_file, stop_process, write_pid_file
 except ImportError:
     from lifecycle_models import SchedulerStatus
-    from process_adapter import get_active_process_pid, get_pid_file_path, remove_pid_file, stop_process, write_pid_file
+    from process_adapter import get_active_process_pid_status, get_pid_file_path, remove_pid_file, stop_process, write_pid_file
 
 if TYPE_CHECKING:
     from .job_models import Job, JobStatus
@@ -77,7 +77,7 @@ def _build_scheduler_status(
     local_timezone,
 ) -> SchedulerStatus:
     """Decide which status shape to return after combining PID-file truth with live process checks."""
-    active_pid = get_active_process_pid()
+    active_pid = get_active_process_pid_status()
     pid_file = get_pid_file_path()
 
     if active_pid is None:
@@ -293,7 +293,7 @@ def run_scheduler_foreground() -> None:
 
     scheduler_module = _scheduler_module()
 
-    existing_pid = get_active_process_pid()
+    existing_pid = get_active_process_pid_status()
     if existing_pid is not None:
         raise RuntimeError(f"Scheduler is already running (PID {existing_pid})")
 

@@ -14,10 +14,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 try:
     from .models import LeadIntent, LeadRun, LeadSource, LeadTarget
-    from .runtime_support import get_platform_dirs
+    from .runtime_adapter import get_platform_dirs
 except ImportError:
     from models import LeadIntent, LeadRun, LeadSource, LeadTarget
-    from runtime_support import get_platform_dirs
+    from runtime_adapter import get_platform_dirs
 
 
 # ============================================
@@ -52,14 +52,26 @@ def _init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             product TEXT NOT NULL,
             region TEXT NOT NULL,
+            city TEXT,
             intent TEXT NOT NULL,
             leads_json TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
         """)
+        _add_column_if_missing(conn, "lead_runs", "city", "TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_runs_created_at ON lead_runs(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_lead_runs_product_region ON lead_runs(product, region)")
         logger.debug("Lead finder database initialized")
+
+
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """Add one SQLite column only when an older local MVP database is missing it."""
+    # MVP schemas change while you are learning and iterating.
+    # This tiny migration helper lets old local databases keep working after a new column is added.
+    conn.row_factory = sqlite3.Row
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _lead_to_dict(item: LeadTarget) -> dict:
@@ -77,6 +89,7 @@ def _row_to_lead_run(row: sqlite3.Row) -> LeadRun:
         LeadTarget(
             product=item["product"],
             region=item["region"],
+            city=item.get("city"),
             intent=LeadIntent(item["intent"]),
             source=LeadSource(item["source"]),
             title=item["title"],
@@ -90,6 +103,7 @@ def _row_to_lead_run(row: sqlite3.Row) -> LeadRun:
     return LeadRun(
         product=row["product"],
         region=row["region"],
+        city=row["city"],
         intent=LeadIntent(row["intent"]),
         leads=leads,
         created_at=datetime.fromisoformat(row["created_at"]),
@@ -107,10 +121,10 @@ def _insert_lead_run(run: LeadRun) -> LeadRun:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
-            INSERT INTO lead_runs (product, region, intent, leads_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO lead_runs (product, region, city, intent, leads_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (run.product, run.region, run.intent.value, json.dumps([_lead_to_dict(item) for item in run.leads]), run.created_at.isoformat()),
+            (run.product, run.region, run.city, run.intent.value, json.dumps([_lead_to_dict(item) for item in run.leads]), run.created_at.isoformat()),
         )
     return run
 
