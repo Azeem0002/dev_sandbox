@@ -21,6 +21,26 @@ Those belong on your machine or a VPS you control.
 | `secure_login_5` | Yes | FastAPI web app | Login/session systems become useful when other apps/users can call them. |
 | `media_automation_6` | Yes | Always-on API/worker | Social scheduling needs recurring checks while your laptop is off. |
 | `lead_finder_7` | Yes/optional | FastAPI web app | Useful as a hosted micro-SaaS API once you want remote access or customers. |
+| `partner_match_8` | Yes | FastAPI web app plus worker-ready infrastructure | Social discovery needs hosted auth, location matching, notifications, media handling, and moderation. |
+
+## Real User Scale
+
+For projects that handle users, SQLite is acceptable for local MVPs, demos, and
+solo internal tools. It is not the target for 5,000-10,000 concurrent users.
+
+Use this production shape before selling a multi-user product seriously:
+
+- FastAPI served by multiple workers behind a reverse proxy or managed app host.
+- Managed Postgres for users, sessions, posts, reports, jobs, and app data.
+- Redis for queues, rate limits, presence, notification fanout, and short-lived cache.
+- Object storage for uploaded images/videos instead of storing media on the app server.
+- Background workers for email, push notifications, scraping, posting, and AI tasks.
+- Observability: logs, metrics, error tracking, uptime checks, and database backups.
+
+Free vs premium access is mostly enforced in code, but billing is usually handled
+by a third-party provider such as Stripe, Lemon Squeezy, Paddle, RevenueCat, or
+the mobile app stores. The app stores each user's plan/entitlements and checks
+those entitlements before premium actions.
 
 ## Adapter Decision
 

@@ -1031,6 +1031,13 @@ def _fetch_post_comments(post_id: str, limit: int = 50) -> list[PostComment]:
     return [comment for row in reversed(rows) if (comment := _row_to_post_comment(row)) is not None]
 
 
+def _fetch_post_comment(comment_id: str) -> PostComment | None:
+    """Fetch one active post comment."""
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM post_comments WHERE id = ? AND deleted_at IS NULL", (comment_id,)).fetchone()
+    return _row_to_post_comment(row)
+
+
 def _count_post_comments(post_id: str) -> int:
     """Count comments for one post."""
     with _connect() as conn:
@@ -1093,6 +1100,16 @@ def _fetch_notifications(user_id: str, limit: int = 50) -> list[Notification]:
     with _connect() as conn:
         rows = conn.execute("SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()
     return [notification for row in rows if (notification := _row_to_notification(row)) is not None]
+
+
+def _notification_exists(user_id: str, title: str, related_id: str) -> bool:
+    """Return whether the same notification was already sent."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM notifications WHERE user_id = ? AND title = ? AND related_id = ? LIMIT 1",
+            (user_id, title, related_id),
+        ).fetchone()
+    return row is not None
 
 
 def _mark_notification_read(notification_id: str, user_id: str, now: datetime) -> bool:
@@ -1354,6 +1371,11 @@ def fetch_post_comments(post_id: str, limit: int = 50) -> list[PostComment]:
     return _fetch_post_comments(post_id, limit)
 
 
+def fetch_post_comment(comment_id: str) -> PostComment | None:
+    """Public wrapper for fetching one post comment."""
+    return _fetch_post_comment(comment_id)
+
+
 def count_post_comments(post_id: str) -> int:
     """Public wrapper for counting post comments."""
     return _count_post_comments(post_id)
@@ -1387,6 +1409,11 @@ def insert_notification(notification: Notification) -> Notification:
 def fetch_notifications(user_id: str, limit: int = 50) -> list[Notification]:
     """Public wrapper for fetching notifications."""
     return _fetch_notifications(user_id, limit)
+
+
+def notification_exists(user_id: str, title: str, related_id: str) -> bool:
+    """Public wrapper for notification de-duplication."""
+    return _notification_exists(user_id, title, related_id)
 
 
 def mark_notification_read(notification_id: str, user_id: str, now: datetime) -> bool:

@@ -10,6 +10,9 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
 
 # ============================================
 # Security adapter - reusable mental map
@@ -30,6 +33,13 @@ def _get_access_token_seconds() -> int:
     return int(os.getenv("SECURE_LOGIN_ACCESS_TOKEN_SECONDS", "3600"))
 
 
+def _get_password_hasher() -> PasswordHasher:
+    """Return the production password hasher used for stored user passwords."""
+    # Argon2id is the practical launch default for password hashing.
+    # The adapter hides the library so application code still calls hash_password()/verify_password().
+    return PasswordHasher()
+
+
 def _b64url_encode(data: bytes) -> str:
     """Encode bytes using JWT-compatible base64url without padding."""
     # JWT segments use URL-safe base64 and strip "=" padding.
@@ -48,25 +58,15 @@ def _sign(message: str) -> str:
 
 
 def _hash_password(password: str) -> str:
-    """Hash password with stdlib PBKDF2 for a dependency-light MVP."""
-    # Store algorithm + rounds + salt + digest so hashes can be verified later.
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 210_000)
-    return f"pbkdf2_sha256$210000${_b64url_encode(salt)}${_b64url_encode(digest)}"
+    """Hash password with Argon2id for launch-ready password storage."""
+    return _get_password_hasher().hash(password)
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
-    """Verify raw password against stored PBKDF2 hash."""
+    """Verify raw password against stored Argon2id hash."""
     try:
-        algorithm, rounds, salt_text, digest_text = password_hash.split("$")
-        if algorithm != "pbkdf2_sha256":
-            return False
-        salt = _b64url_decode(salt_text)
-        expected = _b64url_decode(digest_text)
-        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds))
-        # compare_digest prevents timing leaks from normal string/bytes comparison.
-        return hmac.compare_digest(actual, expected)
-    except (ValueError, TypeError):
+        return _get_password_hasher().verify(password_hash, password)
+    except (InvalidHashError, VerificationError, VerifyMismatchError, TypeError):
         return False
 
 

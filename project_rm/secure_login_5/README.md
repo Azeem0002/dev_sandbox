@@ -1,6 +1,6 @@
 # Secure Login 5
 
-FastAPI JWT authentication MVP with DTOs, server-side sessions, SQLite, and reusable adapter structure.
+FastAPI JWT authentication MVP with DTOs, server-side sessions, SQLite, Argon2id password hashing, and reusable adapter structure.
 
 ## Architecture
 

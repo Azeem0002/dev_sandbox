@@ -14,6 +14,8 @@ small teammate groups with an AI helper inside group chat.
 - Verification badge support through `PARTNER_MATCH_VERIFIED_EMAILS`.
 - Public shoutout/building posts with text and media URLs for images/videos.
 - Likes, comments, follows, partner requests, notifications, and profile visit counts.
+- Users can report users, groups, public posts, and comments.
+- Nearby users get a one-time notification when a new opt-in user shares mindset, goal, or sub-goal tags inside the default search radius.
 - Teammate groups capped by `PARTNER_MATCH_MAX_GROUP_MEMBERS` instead of a buried magic number.
 - Group admin add/remove controls.
 - Group invite links with expiry/revoke/join flow.
@@ -79,6 +81,11 @@ owns auth, matching, groups, reports, AI routing, and persistence.
 
 SQLite is fine for local MVP and demos. For real users, move the same adapter
 surface to managed Postgres before launch.
+
+For 5,000-10,000 concurrent users, do not run this on local SQLite. Use a real
+API deployment with multiple workers, managed Postgres, Redis for queues/rate
+limits/presence, object storage for media, and push/email infrastructure for
+notifications.
 
 ## Run
 

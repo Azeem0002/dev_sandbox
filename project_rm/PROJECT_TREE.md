@@ -1,17 +1,22 @@
 # Reading Order
 
+Use this order when learning or reviewing a project. It starts with vocabulary,
+then input cleanup, then the decisions, then the I/O edges.
+
 ```text
-boundary entrypoint
- ↓
-validation/parsing
- ↓
-application use case
+README / PROJECT_COMMANDS
  ↓
 models
  ↓
+validation/parsing
+ ↓
 core services/rules
  ↓
-adapters when I/O is needed
+adapters/infrastructure
+ ↓
+application use cases
+ ↓
+boundary entrypoints
  ↓
 workers/background loops
  ↓
@@ -89,7 +94,10 @@ tests/        -> automated checks
 
 # Module Function Order
 
-Use dependency order inside each module. A reader should meet the building blocks before the public function that uses them.
+Use semantic workflow order inside each module: group functions by what they mean
+and place them in the order the logic unfolds. This is close to responsibility
+order plus dependency order. A reader should meet the small building blocks
+before the public function that uses them.
 
 ```text
 1. constants
@@ -102,7 +110,9 @@ Use dependency order inside each module. A reader should meet the building block
 8. CLI/app entrypoint last
 ```
 
-Do not move functions only to alphabetize them. Move them when the reading flow gets clearer.
+Do not move functions only to alphabetize them. Alphabetical order separates
+related ideas and is worse for learning. Move functions when the mental workflow
+gets clearer: parse -> clean -> decide -> save/execute -> present.
 
 # Naming Decisions
 
@@ -128,6 +138,16 @@ process_adapter.py:
   Linux and Windows both execute processes, but a process alone dies on logout/reboot.
   Use process_adapter for direct "start now" execution.
   Use service_adapter -> systemd_adapter/task_scheduler_adapter for "keep it available after reboot/logon".
+
+security_adapter.py:
+  Own password hashing, token creation, token verification, HMAC signing, and constant-time comparisons.
+  Use argon2-cffi for password hashing in projects that support password login.
+  Use hashlib/hmac/secrets from the Python standard library for HMAC signatures, token ids, webhook signatures,
+  file integrity, or dedupe fingerprints when a full protocol library is not needed.
+  Do not add hashlib to every project. Add a security_adapter only when the project handles users, passwords,
+  signed tokens, API keys, webhook signatures, file integrity, or dedupe fingerprints.
+  For production OAuth/JWT-heavy apps, prefer a maintained library such as Authlib or PyJWT instead of expanding
+  hand-written token code.
 
 models.py / *_models.py:
   Own data shapes only.

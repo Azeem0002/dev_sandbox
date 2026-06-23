@@ -44,6 +44,8 @@ class ReportTargetType(StrEnum):
     """Thing a user can report."""
     USER = "user"
     GROUP = "group"
+    POST = "post"
+    COMMENT = "comment"
 
 
 class MessageSenderType(StrEnum):

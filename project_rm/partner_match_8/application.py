@@ -29,6 +29,7 @@ try:
         fetch_notifications,
         fetch_partner_request,
         fetch_partner_requests_for_user,
+        fetch_post_comment,
         fetch_post_comments,
         fetch_profile,
         fetch_public_post,
@@ -52,6 +53,7 @@ try:
         insert_safety_block,
         is_blocked_between,
         mark_notification_read,
+        notification_exists,
         revoke_group_invite,
         soft_delete_user,
         touch_user_seen,
@@ -124,6 +126,7 @@ except ImportError:
         fetch_notifications,
         fetch_partner_request,
         fetch_partner_requests_for_user,
+        fetch_post_comment,
         fetch_post_comments,
         fetch_profile,
         fetch_public_post,
@@ -147,6 +150,7 @@ except ImportError:
         insert_safety_block,
         is_blocked_between,
         mark_notification_read,
+        notification_exists,
         revoke_group_invite,
         soft_delete_user,
         touch_user_seen,
@@ -456,6 +460,45 @@ def _score_feed_post(post: PublicPost, user: User, followed_user_ids: set[str], 
     return score
 
 
+def _notify_nearby_matching_users(new_user: User) -> None:
+    """Notify nearby users when this user has matching tags and opt-in location."""
+    config = _get_app_config()
+    new_profile = fetch_profile(new_user.id)
+    new_location = fetch_location(new_user.id)
+    if new_profile is None or new_location is None or not new_location.is_enabled:
+        return
+
+    new_tags = set(new_profile.mindset_tags + new_profile.goal_tags + new_profile.sub_goal_tags)
+    if not new_tags:
+        return
+
+    title = "New nearby match"
+    for candidate_user, candidate_profile, candidate_location in fetch_location_candidates(new_user.id):
+        if is_blocked_between(new_user.id, candidate_user.id):
+            continue
+        profile = candidate_profile or _profile_or_default(candidate_user)
+        candidate_tags = set(profile.mindset_tags + profile.goal_tags + profile.sub_goal_tags)
+        if not new_tags & candidate_tags:
+            continue
+        distance = distance_km(new_location.latitude, new_location.longitude, candidate_location.latitude, candidate_location.longitude)
+        if distance > config.default_radius_km:
+            continue
+        if notification_exists(candidate_user.id, title, new_user.id):
+            continue
+        insert_notification(
+            Notification(
+                id=_new_id("notif"),
+                user_id=candidate_user.id,
+                notification_type=NotificationType.GENERAL,
+                title=title,
+                body=f"{new_profile.display_name} joined nearby with similar interests",
+                related_id=new_user.id,
+                read_at=None,
+                created_at=_utc_now(),
+            )
+        )
+
+
 def _group_to_dict(group: PartnerGroup) -> dict:
     """Convert a group model to API-safe output."""
     return {
@@ -541,7 +584,9 @@ def update_my_profile(user: User, payload: ProfileInputDTO) -> PartnerProfile:
         verification=VerificationStatus.VERIFIED if user.is_verified else VerificationStatus.UNVERIFIED,
         avatar_url=user.avatar_url,
     )
-    return upsert_profile(profile)
+    saved = upsert_profile(profile)
+    _notify_nearby_matching_users(user)
+    return saved
 
 
 def get_my_profile(user: User) -> PartnerProfile:
@@ -592,7 +637,9 @@ def update_my_location(user: User, payload: LocationInputDTO) -> PartnerLocation
         is_enabled=payload.is_enabled,
         updated_at=_utc_now(),
     )
-    return upsert_location(location)
+    saved = upsert_location(location)
+    _notify_nearby_matching_users(user)
+    return saved
 
 
 def find_nearby_partners(user: User, radius_km: float | None = None) -> list[NearbyPartner]:
@@ -898,11 +945,15 @@ def get_group_messages(user: User, group_id: str, limit: int = 50) -> list[dict]
 
 
 def report_target(user: User, payload: ReportInputDTO) -> dict:
-    """Store a user or group report for review."""
+    """Store a user, group, post, or comment report for review."""
     if payload.target_type.value == "user" and fetch_user_by_id(payload.target_id) is None:
         raise ValueError("Reported user not found")
     if payload.target_type.value == "group" and fetch_group(payload.target_id) is None:
         raise ValueError("Reported group not found")
+    if payload.target_type.value == "post" and fetch_public_post(payload.target_id) is None:
+        raise ValueError("Reported post not found")
+    if payload.target_type.value == "comment" and fetch_post_comment(payload.target_id) is None:
+        raise ValueError("Reported comment not found")
     report = MemberReport(
         id=_new_id("report"),
         reporter_user_id=user.id,

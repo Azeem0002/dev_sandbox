@@ -203,6 +203,8 @@ curl http://127.0.0.1:8000/partner-requests -H "Authorization: Bearer TOKEN_HERE
 curl http://127.0.0.1:8000/notifications -H "Authorization: Bearer TOKEN_HERE"
 curl http://127.0.0.1:8000/profiles/USER_ID -H "Authorization: Bearer TOKEN_HERE"
 curl http://127.0.0.1:8000/me/profile-visits -H "Authorization: Bearer TOKEN_HERE"
+curl -X POST http://127.0.0.1:8000/reports -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"target_type":"post","target_id":"POST_ID","reason":"spam","details":"Promotional spam"}'
+curl -X POST http://127.0.0.1:8000/reports -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"target_type":"comment","target_id":"COMMENT_ID","reason":"abuse","details":"Abusive comment"}'
 curl -X POST http://127.0.0.1:8000/groups -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"name":"Builders","purpose":"ship useful SaaS tools"}'
 curl -X POST http://127.0.0.1:8000/groups/GROUP_ID/invites -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"expires_in_hours":72}'
 curl -X POST http://127.0.0.1:8000/groups/invites/INVITE_TOKEN/join -H "Authorization: Bearer TOKEN_HERE"

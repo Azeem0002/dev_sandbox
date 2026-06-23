@@ -27,21 +27,7 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. linux can also use process adapter but systemd is better correct?
-2. can i apply docker at the end of a finished app or it has to be the beginning alone
-3. 
-
-
-
-
-
-
-
-
-
-
-
-
+1. 
 
 
 
@@ -83,6 +69,21 @@
 # Update the mental map docs if needed
 
 1. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

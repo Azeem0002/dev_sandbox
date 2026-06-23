@@ -432,7 +432,7 @@ def send_message(group_id: str, payload: MessageInputDTO, authorization: str | N
 
 @app.post("/reports")
 def report(payload: ReportInputDTO, authorization: str | None = Header(default=None)) -> dict:
-    """Report a user or group."""
+    """Report a user, group, post, or comment."""
     try:
         return report_target(_current_user(authorization), build_report_input(payload))
     except ValueError as error:

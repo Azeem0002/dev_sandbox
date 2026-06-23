@@ -251,7 +251,7 @@ def install_systemd_service(*, interval_secs: int, system: bool = False) -> tupl
         return (
             f"Installed system service at {service_path} and timer at {timer_path}",
             [
-                "sudo systemctl daemon-reload",
+                "use: 'sudo systemctl daemon-reload' ",
                 "Then run `autoclear start` to enable and start the installed timer.",
             ],
         )
@@ -266,6 +266,9 @@ def install_systemd_service(*, interval_secs: int, system: bool = False) -> tupl
         ],
     )
 
+# ============================================
+# Public adapter API - stable reusable surface
+# ============================================
 
 def is_systemd_service_installed(*, system: bool = False) -> bool:
     """Report whether the autoclear systemd timer is installed."""
