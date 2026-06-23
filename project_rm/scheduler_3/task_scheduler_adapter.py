@@ -72,5 +72,5 @@ def install_task_scheduler_service() -> tuple[str, list[str]]:
     _install_windows_task()
     return (
         f"Windows Task '{WINDOWS_TASK_NAME}' created",
-        ["Task will run when the current user logs on"],
+        ["Task will run when the current user logs on and launch the scheduler worker."],
     )

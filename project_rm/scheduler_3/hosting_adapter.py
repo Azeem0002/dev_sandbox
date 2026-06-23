@@ -31,8 +31,8 @@ class HostingProfile:
 # ============================================
 # Hosting adapter - reusable mental map
 # ============================================
-# A hosting adapter belongs at the infrastructure edge: it describes where/how
-# the app should run, but it does not install services or start hidden workers.
+# A hosting adapter belongs at the infrastructure edge: it describes how to run
+# the app on a host, but it does not decide business rules or start hidden work.
 
 
 # ============================================

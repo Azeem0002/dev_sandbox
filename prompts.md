@@ -27,7 +27,7 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. 
+1. what;s
 
 
 
@@ -64,11 +64,12 @@
 
 
 # Solve the root problem not symptoms:
-# Check previous projects first for reusable functions/adapters for retention learning and recognition line for line in the correct order except for project specific functions. 
+# Check previous projects first for reusable functions/adapters for retention learning and recognition line for line in the correct order except for project specific functions. and and also synchronize their educational comments to match the reusable
 # use default prompt from prompts.md "## PROMPT: PRAGMATIC SENIOR MICRO-SAAS ENGINEER" if need be to continue
 # Update the mental map docs if needed
 
-1. 
+1. targeted ads: to check which region & city the most searched products  are and send ads to that region. explain targeted ads and it's features or what do you suggest on the best idea for targetted ads considering my idea
+
 
 
 
@@ -140,6 +141,7 @@ INPUT -> PARSE -> CLEAN -> DECIDE -> SAVE -> EXECUTE -> LOG -> PRESENT
 - Prefer parsing and normalization early at boundaries.
 - If orchestration grows business logic, move that logic into core.
 - if app should have users and login, it should be through google login as base
+- synchronize the educational comments or reusable adapters/functions and patters in new projects
 
 ## PRACTICAL CONSTRAINTS
 - Keep structure flat and readable where possible.

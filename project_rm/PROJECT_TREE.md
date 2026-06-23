@@ -1,7 +1,41 @@
-# Reading Order
+# Reading / Writing Order
 
-Use this order when learning or reviewing a project. It starts with vocabulary,
-then input cleanup, then the decisions, then the I/O edges.
+Use different orders for different jobs. One order cannot serve quick
+understanding, deep mastery, and new implementation equally well.
+
+## Quick Understanding
+
+Use this when opening an existing project and asking "what does the user do,
+and what happens next?"
+
+```text
+README / PROJECT_COMMANDS
+ ↓
+boundary entrypoints
+ ↓
+application use cases
+ ↓
+core services/rules
+ ↓
+adapters/infrastructure
+ ↓
+models
+ ↓
+validation/parsing
+ ↓
+workers/background loops
+ ↓
+private helpers last
+```
+
+This is outside-in reading. It follows the user's action into the system.
+Application comes before adapters because application tells the story; adapters
+explain the mechanics.
+
+## Deep Mastery
+
+Use this after you already know what the app does and want stronger retention of
+the reusable shapes.
 
 ```text
 README / PROJECT_COMMANDS
@@ -22,6 +56,34 @@ workers/background loops
  ↓
 private helpers last
 ```
+
+This is vocabulary-first reading. It is slower, but useful when reinforcing the
+mental map line by line.
+
+## Writing / Building
+
+Use this when implementing a new feature or a new project.
+
+```text
+models
+ ↓
+validation/parsing
+ ↓
+core services/rules
+ ↓
+adapters/infrastructure
+ ↓
+application use cases
+ ↓
+boundary entrypoints
+ ↓
+workers/background loops
+ ↓
+tests/docs
+```
+
+This is inside-out building. Create stable data shapes and rules before wiring
+them into orchestration and user-facing entrypoints.
 
 # General Project Tree
 
@@ -120,6 +182,9 @@ gets clearer: parse -> clean -> decide -> save/execute -> present.
 database_adapter.py:
   Keep under adapters for these MVPs. A database is external I/O, even when it is SQLite.
   If a project grows large, `persistence/` can become a sub-package, but the module is still an adapter by architecture.
+  SQLite is acceptable for local tools, demos, and one-user MVPs. User-facing SaaS projects targeting thousands of
+  concurrent users should move the same public adapter surface to Postgres through SQLAlchemy/SQLModel plus Alembic
+  migrations and a psycopg driver. Do not claim a Postgres upgrade until database_adapter.py stops calling sqlite3.
 
 service_adapter.py:
   Keep this name as the cross-platform facade for native service/task integration.
@@ -215,3 +280,22 @@ Project-specific parts:
   platform/service names
   business-specific mapping rules
 ```
+
+# Reusable Comment Rule
+
+When adding a new reusable adapter/function pattern, copy the same educational
+comment skeleton from the closest existing project and only change the
+project-specific words. Keep these sections consistent:
+
+```text
+module docstring
+reusable mental map banner
+shared private skeleton banner
+project-specific extension banner, when needed
+public adapter API banner
+public wrapper docstrings
+```
+
+Comments should explain reusable concepts once, in simple terms. Avoid noisy
+line-by-line narration when the code is already obvious. Prefer comments that
+teach responsibility boundaries, side effects, and why this adapter exists.

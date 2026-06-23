@@ -1,6 +1,6 @@
 """Small lifecycle/status models shared by autoclear boundary and application code.
 lifecycle_models.py is for models that describe runtime state/lifecycle.
-no AutoclearStart and AutoclearStop Because start/stop are actions, not state snapshots.
+no AutoclearStart and AutoclearS stop Because start/stop are actions, not state snapshots.
 """
 # Models are structured container for information describing a state
 # create a model when multiple piece of data belongs/travel together

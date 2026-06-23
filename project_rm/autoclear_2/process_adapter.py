@@ -28,7 +28,6 @@ except ImportError:
 # Shared private skeleton - start reading here
 # ============================================
 def _get_pid_file_path() -> Path:
-    # `platformdirs` gives the app-owned data directory for the current OS/user.
     """Return the app-owned PID file location for the autoclear worker process."""
     data_dir = Path(get_platform_dirs().user_data_dir)
     # Keep path getters pure: do not create directories here.
@@ -42,7 +41,7 @@ def _read_pid_file(*, warn_on_invalid: bool = True) -> int | None:
     try:
         # read_text(...).strip(): read file contents as text and remove whitespace/newline.
         raw_pid = pid_file.read_text(encoding="utf-8").strip()
-        # int("1234") -> 1234. Raises ValueError if the file contains junk.
+        # int("1234") -> 1234. Raises ValueError if the file contains invalid text.
         return int(raw_pid)
     except FileNotFoundError:
         return None
@@ -97,7 +96,6 @@ def _remove_pid_file() -> None:
 
 def _get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None:
     """Return the status of the active autoclear PID only when the PID file points to a real managed worker."""
-    # we'rechecking if pid is still alive and get it's details
     pid = _read_pid_file(warn_on_invalid=warn_on_invalid)
     if pid is None:
         return None

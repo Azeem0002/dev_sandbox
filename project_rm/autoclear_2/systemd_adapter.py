@@ -1,4 +1,4 @@
-"""Linux systemd adapter for autoclear.
+"""Linux systemd background service manager adapter for autoclear.
 
 This module owns systemd unit text, systemctl calls, and systemd status parsing.
 service_adapter.py stays as the cross-platform facade.
@@ -57,7 +57,6 @@ def _run_systemctl(args: list[str], *, system: bool) -> subprocess.CompletedProc
     """Run systemctl for either user-level or system-level units."""
     # `systemctl --user` manages per-user units.
     # Plain `systemctl` manages system-wide units.
-    # system means user-level or system-wide. system-wide requires sudo
     base = ["systemctl"]
     if not system:
         base.append("--user")
@@ -151,7 +150,6 @@ def _install_systemd_system(service_content: str, timer_content: str) -> tuple[P
     timer_result = _run_system_command(["sudo", "tee", str(timer_path)], input_text=timer_content)
     if timer_result.returncode != 0:
         raise RuntimeError(timer_result.stderr.strip() or "Failed to install systemd timer")
-
     return service_path, timer_path
 
 
@@ -160,10 +158,17 @@ def _is_systemd_timer_installed(*, system: bool) -> bool:
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "LoadState", system=system) == "loaded"
 
 
+def _is_systemd_backend_installed(*, system: bool) -> bool:
+    """Return whether the autoclear systemd service/timer backend is installed."""
+    # Autoclear is scheduled by a timer that triggers a oneshot service.
+    # If the timer is missing, the recurring backend cannot run even if the service file exists.
+    return _is_systemd_timer_installed(system=system)
+
+
 def _get_status_from_systemd(*, system: bool) -> AutoclearStatus:
     """Summarize the installed timer/service state into one app-facing status model."""
     # Read raw unit properties once here so the rest of the app can consume one typed status object.
-    if not _is_systemd_timer_installed(system=system):
+    if not _is_systemd_backend_installed(system=system):
         # This factory stays in the adapter because "systemd timer not installed"
         # is infrastructure knowledge, not a generic model rule.
         return AutoclearStatus(
@@ -179,7 +184,7 @@ def _get_status_from_systemd(*, system: bool) -> AutoclearStatus:
     timer_state = _read_systemd_property(SYSTEMD_TIMER_NAME, "ActiveState", system=system) or "unknown"
     # Service state answers "what happened to the worker service?"
     service_state = _read_systemd_property(SYSTEMD_SERVICE_NAME, "ActiveState", system=system) or "unknown"
-    # LastTriggerUSec is useful after the timer has fired at least once.
+    # LastTriggerUSec is useful when the timer last fired.
     last_trigger = _read_systemd_property(SYSTEMD_TIMER_NAME, "LastTriggerUSec", system=system) or "n/a"
     # MainPID is "0" for inactive oneshot services, so treat non-positive values as no PID.
     main_pid = _read_systemd_property(SYSTEMD_SERVICE_NAME, "MainPID", system=system) or ""
@@ -251,7 +256,7 @@ def install_systemd_service(*, interval_secs: int, system: bool = False) -> tupl
         return (
             f"Installed system service at {service_path} and timer at {timer_path}",
             [
-                "use: 'sudo systemctl daemon-reload' ",
+                "sudo systemctl daemon-reload",
                 "Then run `autoclear start` to enable and start the installed timer.",
             ],
         )
@@ -266,13 +271,10 @@ def install_systemd_service(*, interval_secs: int, system: bool = False) -> tupl
         ],
     )
 
-# ============================================
-# Public adapter API - stable reusable surface
-# ============================================
 
 def is_systemd_service_installed(*, system: bool = False) -> bool:
-    """Report whether the autoclear systemd timer is installed."""
-    return _is_systemd_timer_installed(system=system)
+    """Report whether the autoclear systemd service/timer backend is installed."""
+    return _is_systemd_backend_installed(system=system)
 
 
 def start_systemd_service(*, interval_secs: int | None = None, system: bool = False) -> str:
