@@ -27,8 +27,15 @@
 
 # Number and answer all questions and sub questions systematically
 
-1. what;s
+1. what's the diff between these two sides
+parts = [f"Autoclear status: {state}", f"backend={status.backend}"] 
 
+if status.pid is not None:
+   parts.append(f"pid={status.pid}")
+2. backend: process | pid_file= /home/az/.loc
+* which is better between  : and = for output reu
+3. what's the diff between target_tty= /dev/pts/1 and target_tty= /dev/pts/4
+4. 
 
 
 
@@ -68,9 +75,7 @@
 # use default prompt from prompts.md "## PROMPT: PRAGMATIC SENIOR MICRO-SAAS ENGINEER" if need be to continue
 # Update the mental map docs if needed
 
-1. targeted ads: to check which region & city the most searched products  are and send ads to that region. explain targeted ads and it's features or what do you suggest on the best idea for targetted ads considering my idea
-
-
+1. 
 
 
 

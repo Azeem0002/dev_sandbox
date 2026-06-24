@@ -42,3 +42,18 @@ def parse_interval(value: int | str) -> int:
     if seconds > 172800:
         raise ValueError("Interval too large. (max 2 days)")
     return seconds
+
+
+def format_duration_seconds(seconds: int | None) -> str:
+    """Format seconds as machine value plus a small human-friendly label."""
+    if seconds is None:
+        return "unknown"
+    if seconds % 86400 == 0:
+        label = f"{seconds // 86400}d"
+    elif seconds % 3600 == 0:
+        label = f"{seconds // 3600}h"
+    elif seconds % 60 == 0:
+        label = f"{seconds // 60}m"
+    else:
+        label = f"{seconds}s"
+    return f"{seconds}s ({label})"

@@ -4,6 +4,7 @@ This module owns PID files, worker-process discovery, spawning, and stopping.
 It hides OS/process details behind a stable app-facing adapter surface.
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -88,6 +89,59 @@ def _write_pid_file(pid: int) -> None:
     pid_file.write_text(str(pid), encoding="utf-8")
 
 
+def _fd_terminal_path(fd: int) -> str | None:
+    """Return the terminal path for one file descriptor when it points at `/dev/...`."""
+    try:
+        if os.isatty(fd):
+            return os.ttyname(fd)
+    except OSError:
+        pass
+
+    if os.name == "nt":
+        return None
+
+    try:
+        fd_target = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return None
+    return fd_target if fd_target.startswith("/dev/") else None
+
+
+def _process_terminal_path(process: psutil.Process) -> str | None:
+    """Return a process terminal path when psutil can discover one."""
+    try:
+        terminal = process.terminal()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return None
+    return terminal if terminal and terminal.startswith("/dev/") else None
+
+
+def _resolve_launch_terminal_path() -> str | None:
+    """Return the terminal path connected to the controller, when one can be found."""
+    env_tty = os.getenv("AUTOCLEAR_TTY", "").strip()
+    if env_tty:
+        return env_tty
+
+    # Check stdin/stdout/stderr because wrappers can keep only one fd attached
+    # to the real terminal.
+    for fd in (1, 0, 2):
+        terminal = _fd_terminal_path(fd)
+        if terminal:
+            return terminal
+
+    current = psutil.Process()
+    terminal = _process_terminal_path(current)
+    if terminal:
+        return terminal
+
+    for parent in current.parents():
+        terminal = _process_terminal_path(parent)
+        if terminal:
+            return terminal
+
+    return None
+
+
 def _remove_pid_file() -> None:
     """Delete the PID file to prevent stale worker pointers after shutdown/crashes."""
     pid_file = _get_pid_file_path()
@@ -123,6 +177,14 @@ def _spawn_detached_process(interval_secs: int) -> int:
 
     # Return the standalone worker entrypoint that detached processes and services must launch.
     script_path = get_worker_script_path()
+    env = os.environ.copy()
+    launch_tty = _resolve_launch_terminal_path()
+    if os.name != "nt" and not launch_tty:
+        raise RuntimeError("Could not detect the terminal to clear. Run start from an interactive terminal.")
+    if launch_tty:
+        # Detached workers do not keep a normal stdout target. Pass the launching
+        # terminal path explicitly so the worker can clear that terminal later.
+        env["AUTOCLEAR_TTY"] = launch_tty
     
     process = subprocess.Popen(
         [sys.executable, str(script_path), str(interval_secs)],
@@ -130,6 +192,7 @@ def _spawn_detached_process(interval_secs: int) -> int:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
+        env=env,
         # start_new_session=True: detach child from the current terminal/session.
         start_new_session=True,
         close_fds=True,  # "Close all open file descriptors before running the child process."
@@ -166,6 +229,14 @@ def _read_interval_from_process(process: psutil.Process) -> int | None:
     return None
 
 
+def _read_target_tty_from_process(process: psutil.Process) -> str | None:
+    """Recover the target terminal path from the worker environment when possible."""
+    try:
+        return process.environ().get("AUTOCLEAR_TTY")
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return None
+
+
 def _build_stopped_process_status(detail: str, pid_file: Path) -> AutoclearStatus:
     """Build the public status model for the process backend not-running case."""
     # This is not a model definition. It is an adapter-side factory because
@@ -178,6 +249,7 @@ def _build_stopped_process_status(detail: str, pid_file: Path) -> AutoclearStatu
         last_trigger=None,  # Detached process mode has no timer metadata like systemd does.
         detail=detail,  # Human-facing reason, e.g. "Autoclear not running".
         pid_file=pid_file,  # Show where the adapter looked when dev diagnostics are enabled.
+        target_tty=None,
     )
 
 
@@ -187,6 +259,7 @@ def _build_running_process_status(pid: int, pid_file: Path) -> AutoclearStatus:
     process = _get_process(pid)
     # The autoclear worker stores its interval as the last CLI argument.
     interval = _read_interval_from_process(process) if process is not None else None
+    target_tty = _read_target_tty_from_process(process) if process is not None else None
     return AutoclearStatus(
         backend="process",  # The status came from the detached-process backend.
         is_running=True,  # PID file points to a live managed autoclear worker.
@@ -195,6 +268,7 @@ def _build_running_process_status(pid: int, pid_file: Path) -> AutoclearStatus:
         last_trigger=None,  # Process mode is a loop, not a timer trigger.
         detail="Autoclear process backend running",
         pid_file=pid_file,
+        target_tty=target_tty,
     )
 
 

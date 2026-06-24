@@ -28,11 +28,20 @@ Input -> Validate interval -> Detect platform -> Start/stop/status backend -> Lo
 - Service/process backend drift
 - Broken interval parsing
 - Permission errors in user data/state dirs
+- Terminal attachment: a detached process must know which terminal to clear.
+  The process backend passes the launching TTY through `AUTOCLEAR_TTY`.
+  `status` shows `target_tty` in dev mode so you can confirm the exact terminal
+  being cleared.
+  Native system services usually have no interactive terminal, so they are
+  useful for lifecycle practice but need an explicit target TTY strategy before
+  they can clear a user's visible shell session.
 
 ## Rules of Thumb
 - Keep worker loop separate from control plane
 - Let application choose backend, not the CLI
 - Keep process adapter responsible only for process lifecycle
+- Use `start/status/stop` for the non-blocking background autoclear workflow.
+- Use `watch` only as a foreground debugging/fallback mode.
 
 ## Study Order
 1. `autoclear.py`
@@ -42,6 +51,15 @@ Input -> Validate interval -> Detect platform -> Start/stop/status backend -> Lo
 5. `systemd_adapter.py`
 6. `task_scheduler_adapter.py`
 7. `controller.py`
+
+## Commands
+
+```bash
+uv run --project .. python autoclear_2/controller.py start -i 1m
+uv run --project .. python autoclear_2/controller.py status
+uv run --project .. python autoclear_2/controller.py stop
+uv run --project .. python autoclear_2/controller.py watch -i 1m
+```
 
 ## Developer Contact
 

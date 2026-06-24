@@ -8,12 +8,13 @@ cd /home/az/dev_sandbox/project_rm
 
 ## Learning Map
 
-Use this order for every project:
+Use `PROJECT_TREE.md` for the full quick-reading, deep-mastery, and writing
+orders. For new implementation work, use this short build order:
 
 1. Core vocabulary: `models.py`, `*_models.py`
 2. Validation/parsing: `validation.py`
-3. App/Application/orchestration: `application.py`
-4. Adapters/infrastructure: `*_adapter.py`, `runtime_adapter.py`
+3. Adapters/infrastructure: `*_adapter.py`, `runtime_adapter.py`
+4. App/Application/orchestration: `application.py`
 5. Boundary/entrypoints: `organizer.py`, `controller.py`, `scheduler.py`, `scraper.py`, `api.py`
 
 See `PROJECT_TREE.md` for the recommended module directories when a project grows past flat files.
@@ -41,6 +42,7 @@ partner_match_8    -> owns its own Google login because the social profile is pr
 scraper_4 API      -> requires secure_login_5 bearer token for useful endpoints
 media_automation_6 -> requires secure_login_5 bearer token for useful endpoints
 lead_finder_7      -> requires secure_login_5 bearer token for useful endpoints
+adbot_9            -> requires secure_login_5 bearer token for useful endpoints
 local OS tools     -> no login until they expose a real multi-user API
 ```
 
@@ -53,6 +55,7 @@ secure_login_5     -> host as API when real users need login/session access
 media_automation_6 -> host on an always-on server or pair API with an external scheduler
 lead_finder_7      -> host as API when buyers/sellers should be searched remotely
 partner_match_8    -> host as one API backend for web/mobile/desktop partner discovery clients
+adbot_9            -> host as one API backend for campaign planning; connect ad APIs only after policy/billing safeguards
 ```
 
 ## Organizer
@@ -69,6 +72,7 @@ uv run --project .. python organizer_1/organizer.py backup /path/to/folder --lis
 ```bash
 uv run --project .. python autoclear_2/controller.py --help
 uv run --project .. python autoclear_2/controller.py status
+uv run --project .. python autoclear_2/controller.py watch --interval 1m
 uv run --project .. python autoclear_2/controller.py start --interval 1m
 uv run --project .. python autoclear_2/controller.py stop
 uv run --project .. python autoclear_2/autoclear.py --once
@@ -209,6 +213,24 @@ curl -X POST http://127.0.0.1:8000/groups -H "Authorization: Bearer TOKEN_HERE" 
 curl -X POST http://127.0.0.1:8000/groups/GROUP_ID/invites -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"expires_in_hours":72}'
 curl -X POST http://127.0.0.1:8000/groups/invites/INVITE_TOKEN/join -H "Authorization: Bearer TOKEN_HERE"
 curl -X POST http://127.0.0.1:8000/safety/blocks -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"blocked_user_id":"USER_ID"}'
+```
+
+## AdBot 9
+
+API entrypoint:
+
+```bash
+uv run --project .. uvicorn adbot_9.api:app --reload
+uv run --project .. python -c "from adbot_9.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
+```
+
+Common checks:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl -X POST http://127.0.0.1:8000/campaigns/recommend -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"product":"phone accessories","region":"NG","cities":["Lagos","Abuja"],"platform":"meta","goal":"sales","audience":"local smartphone users","daily_budget":20,"max_locations":3}'
+curl http://127.0.0.1:8000/campaigns/history -H "Authorization: Bearer TOKEN_HERE"
+curl http://127.0.0.1:8000/campaigns/PLAN_ID/export -H "Authorization: Bearer TOKEN_HERE"
 ```
 
 Developer contact placeholders used across project READMEs:

@@ -114,6 +114,7 @@ project_name/
 │   ├── ai_adapter.py
 │   ├── browser_adapter.py
 │   ├── database_adapter.py
+│   ├── demand_adapter.py
 │   ├── email_adapter.py
 │   ├── export_adapter.py
 │   ├── google_auth_adapter.py
@@ -249,6 +250,7 @@ core:
 adapters:
   *_adapter.py
   runtime_adapter.py
+  demand_adapter.py
   google_auth_adapter.py
   location_adapter.py
   systemd_adapter.py

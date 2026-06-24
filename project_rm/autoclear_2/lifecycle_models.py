@@ -21,6 +21,7 @@ class AutoclearStatus:
     last_trigger: str | None
     detail: str | None
     pid_file: Path | None = None
+    target_tty: str | None = None
 
 # ==========================
 # CONFIGURATIONS

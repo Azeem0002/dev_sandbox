@@ -14,11 +14,18 @@ from typing import Callable # Callable: Anything you can call like a function: s
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+# ANSI terminal escape sequence:
+#   \033[H moves the cursor back to the top-left corner.
+#   \033[2J clears the screen.
+#   \033[3J clears scrollback in terminals that support it.
+CLEAR_SEQUENCE = "\033[H\033[2J\033[3J"
+
+
 try:
     from .lifecycle_models import AutoclearConfig
     from .runtime_adapter import (setup_environment, setup_logger)
 except ImportError:
-    from .lifecycle_models import AutoclearConfig
+    from lifecycle_models import AutoclearConfig
     from runtime_adapter import setup_environment, setup_logger
 
 
@@ -33,11 +40,47 @@ def _get_clear_command() -> list[str]:
     """Return clear command."""
     return ["cmd", "/c", "cls"] if os.name == "nt" else ["clear"]
     # "/c": run command and exit
+
+
+def _get_target_tty_path() -> str | None:
+    """Return the terminal path the detached worker should clear, when one was provided."""
+    # The controller sets AUTOCLEAR_TTY before detaching the worker.
+    # Without this, a background process only sees DEVNULL and cannot affect the user's terminal.
+    tty_path = os.getenv("AUTOCLEAR_TTY")
+    return tty_path.strip() if tty_path else None
+
+
+def _write_clear_sequence_to_tty(tty_path: str) -> None:
+    """Write a clear-screen sequence directly to the terminal that launched the worker."""
+    fd = os.open(tty_path, os.O_WRONLY | os.O_NOCTTY)
+    try:
+        os.write(fd, CLEAR_SEQUENCE.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _write_clear_sequence_to_stdout() -> None:
+    """Write a clear-screen sequence to the foreground terminal."""
+    sys.stdout.write(CLEAR_SEQUENCE)
+    sys.stdout.flush()
     
 def _execute_command(command: list[str]) -> None:
     # subprocess.run() expects command as list of arguments, not a single string. ["command", "arg1", "arg2"]
     # List prevents command injection vulnerabilities
     """Execute command."""
+    target_tty = _get_target_tty_path()
+    if target_tty and os.name != "nt":
+        _write_clear_sequence_to_tty(target_tty)
+        return
+
+    if os.name != "nt" and sys.stdout.isatty():
+        _write_clear_sequence_to_stdout()
+        return
+
+    if os.name != "nt" and not sys.stdout.isatty():
+        logger.warning("No terminal attached; autoclear skipped this cycle")
+        return
+
     try:
         subprocess.run(command, timeout=5, check=True)
         # logger.info("Terminal cleared")
@@ -53,12 +96,16 @@ def _execute_command(command: list[str]) -> None:
 # =============================================================================
 def _log_before(retry_state): # Counting
     """Log before."""
+    if os.getenv("AUTOCLEAR_SILENT"):
+        return
     attempt = retry_state.attempt_number
     logger.info(f"Attempt {attempt}/{retry_state.retry_object.stop.max_attempt_number}")
     
 
 def _log_after(retry_state):
     """Log after."""
+    if os.getenv("AUTOCLEAR_SILENT"):
+        return
     if retry_state.outcome.failed:
         logger.warning(f"Attempt failed: {retry_state.outcome.exception()}")
     else:
@@ -99,7 +146,8 @@ def clear_terminal(config: AutoclearConfig) -> None:
 def run_autoclear_once(config: AutoclearConfig) -> None:
     """Run autoclear once."""
     clear_terminal(config)
-    logger.success("Terminal cleared")
+    if not os.getenv("AUTOCLEAR_SILENT"):
+        logger.success("Terminal cleared")
 
 # =============================================================================
 # PUBLIC FUNCTION (WORKER LOOP). main() workflow
@@ -128,7 +176,8 @@ def init():
 
 if __name__ == "__main__":
     init()
-    logger.info(f"Received interval: {sys.argv}")
+    if not os.getenv("AUTOCLEAR_SILENT"):
+        logger.info(f"Received interval: {sys.argv}")
     if "--once" in sys.argv:
         run_autoclear_once(AutoclearConfig())
         sys.exit(0)

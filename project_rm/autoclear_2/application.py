@@ -4,10 +4,14 @@ Boundary code calls this module with already-parsed inputs.
 This layer chooses the right backend and coordinates process/service adapters.
 """
 
+import os
+
 try:
+    from .autoclear import run_autoclear
     from .lifecycle_models import AutoclearStatus
+    from .lifecycle_models import AutoclearConfig
     from .platform_adapter import detect_platform
-    from .validation import parse_interval
+    from .validation import format_duration_seconds, parse_interval
     from .process_adapter import (
         get_status_from_process,
         spawn_detached_process,
@@ -21,9 +25,11 @@ try:
         stop_service,
     )
 except ImportError:
+    from autoclear import run_autoclear
     from lifecycle_models import AutoclearStatus
+    from lifecycle_models import AutoclearConfig
     from platform_adapter import detect_platform
-    from validation import parse_interval
+    from validation import format_duration_seconds, parse_interval
     from process_adapter import (
         get_status_from_process,
         spawn_detached_process,
@@ -63,6 +69,13 @@ def install_autoclear_service(interval: str = "1h", system: bool = False) -> tup
         return ("macOS not yet supported for service install", ["Use `start` to launch autoclear"])
 
     raise RuntimeError(f"Unsupported platform: {platform}")
+
+
+def _format_process_start_message(action: str, pid: int, interval_secs: int, target_tty: str | None = None) -> str:
+    """Build the user-facing process backend startup message."""
+    interval_label = format_duration_seconds(interval_secs)
+    target_text = f"; target terminal {target_tty}" if target_tty else ""
+    return f"Autoclear {action} in background (PID {pid}) with interval {interval_label}{target_text}; first clear starts immediately, then every {interval_label}"
 
 
 # ============================================
@@ -106,7 +119,8 @@ def start_autoclear(interval: str) -> str:
         return start_service(interval_secs=interval_secs, system=False)
 
     pid = spawn_detached_process(interval_secs=interval_secs)
-    return f"Autoclear started in background (PID {pid})"
+    status = get_status_from_process()
+    return _format_process_start_message("started", pid, interval_secs, status.target_tty)
 
 
 def stop_autoclear() -> str:
@@ -142,5 +156,29 @@ def restart_autoclear(interval: str) -> str:
             -> stop_autoclear
             -> start_autoclear
     """
+    interval_secs = parse_interval(interval)
+    platform = detect_platform()
+
     stop_autoclear()
-    return start_autoclear(interval)
+
+    if platform == "linux" and is_service_installed(system=False):
+        return start_service(interval_secs=interval_secs, system=False)
+
+    pid = spawn_detached_process(interval_secs=interval_secs)
+    status = get_status_from_process()
+    return _format_process_start_message("restarted", pid, interval_secs, status.target_tty)
+
+
+def watch_autoclear(interval: str) -> None:
+    """
+    Clear the current terminal from a foreground loop.
+
+    Flow:
+        watch -> watch_autoclear
+        watch_autoclear
+            -> parse_interval
+            -> run_autoclear
+    """
+    interval_secs = parse_interval(interval)
+    os.environ["AUTOCLEAR_SILENT"] = "1"
+    run_autoclear(AutoclearConfig(interval=interval_secs))
