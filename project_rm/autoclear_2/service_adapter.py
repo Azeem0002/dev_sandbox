@@ -16,6 +16,10 @@ try:
         stop_systemd_service,
     )
     from .task_scheduler_adapter import install_task_scheduler_service
+    from .task_scheduler_adapter import get_status_from_task_scheduler
+    from .task_scheduler_adapter import is_task_scheduler_service_installed
+    from .task_scheduler_adapter import start_task_scheduler_service
+    from .task_scheduler_adapter import stop_task_scheduler_service
 except ImportError:
     from lifecycle_models import AutoclearStatus
     from platform_adapter import detect_platform
@@ -26,8 +30,13 @@ except ImportError:
         start_systemd_service,
         stop_systemd_service,
     )
-    from task_scheduler_adapter import install_task_scheduler_service
-
+    from task_scheduler_adapter import (
+        get_status_from_task_scheduler,
+        is_task_scheduler_service_installed,
+        install_task_scheduler_service,
+        start_task_scheduler_service,
+        stop_task_scheduler_service
+    )
 
 # ============================================
 # Service adapter - reusable mental map
@@ -40,8 +49,25 @@ except ImportError:
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Public functions use lifecycle workflow order: check installed state, install/update,
+# start, stop, then read status. This matches how an operator thinks about a service.
+def is_service_installed(*, system: bool = False) -> bool:
+    """Report whether the native service/task definition is installed."""
+    platform = detect_platform()
+    if platform == "linux":
+        return is_systemd_service_installed(system=system)
+    
+    if platform == "windows":
+        return is_task_scheduler_service_installed()
+    
+    if platform == "mac":
+        return False
+    
+    return False
+
+
 def install_service(*, interval_secs: int | None = None, system: bool = False) -> tuple[str, list[str]]:
-    """Install the native OS service/task definition for autoclear."""
+    """Install or update the native OS service/task definition for autoclear."""
     if interval_secs is None:
         raise ValueError("interval_secs is required to install autoclear service")
 
@@ -62,13 +88,6 @@ def install_service(*, interval_secs: int | None = None, system: bool = False) -
     raise RuntimeError(f"Unsupported platform: {platform}")
 
 
-def is_service_installed(*, system: bool = False) -> bool:
-    """Report whether the native service definition is installed."""
-    platform = detect_platform()
-    if platform == "linux":
-        return is_systemd_service_installed(system=system)
-    return False
-
 
 def start_service(*, interval_secs: int | None = None, system: bool = False) -> str:
     """Start the installed native service backend."""
@@ -76,7 +95,7 @@ def start_service(*, interval_secs: int | None = None, system: bool = False) -> 
     if platform == "linux":
         return start_systemd_service(interval_secs=interval_secs, system=system)
     if platform == "windows":
-        raise RuntimeError("Windows task start is not exposed through service_adapter")
+        return start_task_scheduler_service()
     raise RuntimeError(f"Unsupported platform: {platform}")
 
 
@@ -86,10 +105,17 @@ def stop_service(*, system: bool = False) -> str:
     if platform == "linux":
         return stop_systemd_service(system=system)
     if platform == "windows":
-        raise RuntimeError("Windows task stop is not exposed through service_adapter")
+        return stop_task_scheduler_service()
     raise RuntimeError(f"Unsupported platform: {platform}")
 
 
-def get_service_status_from_systemd(*, system: bool) -> AutoclearStatus:
-    """Return Linux systemd status through the service facade."""
-    return get_status_from_systemd(system=system)
+def get_service_status(*, system: bool = False) -> AutoclearStatus:
+    """Return status from the native service/task backend for the current platform."""
+    # The facade chooses the platform only. Each platform adapter owns its own
+    # status parsing and turns native OS details into this project's status model.
+    platform = detect_platform()
+    if platform == "linux":
+        return get_status_from_systemd(system=system)
+    if platform == "windows":
+        return get_status_from_task_scheduler()
+    raise RuntimeError(f"Unsupported platform: {platform}")

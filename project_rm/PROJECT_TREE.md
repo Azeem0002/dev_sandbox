@@ -119,6 +119,7 @@ project_name/
 │   ├── export_adapter.py
 │   ├── google_auth_adapter.py
 │   ├── hosting_adapter.py
+│   ├── interface_adapter.py
 │   ├── job_adapter.py
 │   ├── location_adapter.py
 │   ├── platform_adapter.py
@@ -177,6 +178,29 @@ Do not move functions only to alphabetize them. Alphabetical order separates
 related ideas and is worse for learning. Move functions when the mental workflow
 gets clearer: parse -> clean -> decide -> save/execute -> present.
 
+For service-style adapters, use lifecycle workflow order. This means the public
+surface follows the operator's mental path, not alphabetical order:
+
+```text
+1. is_*_installed / check current installed state
+2. install_* / update installed definition
+3. start_* / execute or enable
+4. stop_* / disable or end
+5. get_*_status / read current state
+```
+
+For process adapters, expose low-level PID/process wrappers first, then lifecycle
+workflow functions: check active PID -> start detached process -> stop -> status.
+For database, AI, export, browser, and other non-service adapters, keep
+responsibility order instead of forcing lifecycle names that do not fit.
+
+Responsibility-order adapters should be read by job, not by lifecycle. For
+example, database adapters usually read as connect/init -> create tables ->
+write records -> read records -> update/delete records. AI adapters usually read
+as build prompt -> call model/provider -> parse response -> return app-safe
+result. This is still semantic workflow order; it is just not service lifecycle
+order.
+
 # Naming Decisions
 
 ```text
@@ -190,6 +214,14 @@ database_adapter.py:
 service_adapter.py:
   Keep this name as the cross-platform facade for native service/task integration.
   It should choose the platform backend, then delegate to a platform-specific adapter.
+
+interface_adapter.py:
+  Own the frontend/backend handoff contract for API projects.
+  It does not render a GUI and should not import GUI frameworks.
+  It tells web, mobile, and desktop clients which HTTP routes, auth headers,
+  payload expectations, and error states are stable.
+  Keep it replaceable: changing React, Flutter, mobile, desktop, or any GUI
+  should not require changing application.py or core business logic.
 
 systemd_adapter.py:
   Own Linux-only systemd unit text, systemctl calls, and systemd status parsing.

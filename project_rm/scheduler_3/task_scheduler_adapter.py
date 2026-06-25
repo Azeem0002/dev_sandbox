@@ -56,17 +56,58 @@ def _build_windows_task_command() -> list[str]:
         "/f",
     ]
 
+def _is_windows_task_installed() -> bool:
+    """Return whether the Windows Task Scheduler entry exists."""
+    result = _run_system_command(["schtasks", "/query", "/tn", WINDOWS_TASK_NAME])
+    return result.returncode == 0
 
-def _install_windows_task() -> None:
+def _install_windows_task() -> str:
     """Create the Windows Task Scheduler entry for the scheduler app."""
     result = _run_system_command(_build_windows_task_command())
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Failed to create Windows task")
+    return f"Windows task installed successfully"
+
+def _start_windows_task() -> str:
+    """Run the installed Windows Task Scheduler entry now."""
+    result = _run_system_command(["schtasks", "/run", "/tn", WINDOWS_TASK_NAME])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Failed to start Windows task")
+    return f"STARTED: Windows Task '{WINDOWS_TASK_NAME}'"
+
+
+def _stop_windows_task() -> str:
+    """End the currently running Windows Task Scheduler entry."""
+    result = _run_system_command(["schtasks", "/end", "/tn", WINDOWS_TASK_NAME])
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "Failed to stop Windows task"
+        if "not currently running" in message.casefold():
+            return f"STOPPED: Windows Task '{WINDOWS_TASK_NAME}' already stopped"
+        raise RuntimeError(message)
+    return f"STOPPED: Windows Task '{WINDOWS_TASK_NAME}'"
+
+
+def _get_windows_task_status() -> str | None:
+    """Return the Windows Task Scheduler status text when the task exists."""
+    result = _run_system_command(["schtasks", "/query", "/tn", WINDOWS_TASK_NAME, "/fo", "LIST", "/v"])
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.casefold().startswith("status:"):
+            return line.split(":", 1)[1].strip()
+    return "installed"
 
 
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Public functions use lifecycle workflow order: check installed state, install/update,
+# start, stop, then read status. This matches how an operator thinks about a service.
+def is_task_scheduler_service_installed() -> bool:
+    """Report whether the scheduler Windows Task Scheduler backend is installed."""
+    return _is_windows_task_installed()
+
+
 def install_task_scheduler_service() -> tuple[str, list[str]]:
     """Install the scheduler Windows Task Scheduler backend."""
     _install_windows_task()
@@ -74,3 +115,18 @@ def install_task_scheduler_service() -> tuple[str, list[str]]:
         f"Windows Task '{WINDOWS_TASK_NAME}' created",
         ["Task will run when the current user logs on and launch the scheduler worker."],
     )
+
+
+def start_task_scheduler_service() -> str:
+    """Start the installed scheduler Windows Task Scheduler backend."""
+    return _start_windows_task()
+
+
+def stop_task_scheduler_service() -> str:
+    """Stop the running scheduler Windows Task Scheduler backend."""
+    return _stop_windows_task()
+
+
+def get_task_scheduler_service_status() -> str | None:
+    """Return scheduler status from the Windows Task Scheduler backend."""
+    return _get_windows_task_status()

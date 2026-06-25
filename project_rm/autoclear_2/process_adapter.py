@@ -319,6 +319,8 @@ def _stop_process(wait: bool = True) -> bool:
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Process adapters expose low-level PID/process wrappers first, then lifecycle
+# workflow functions: check active PID, start detached process, stop, then read status.
 def get_pid_file_path() -> Path:
     """Public wrapper for the autoclear PID file location."""
     return _get_pid_file_path()
@@ -354,11 +356,6 @@ def get_active_process_pid_status(*, warn_on_invalid: bool = True) -> int | None
     return _get_active_process_pid_status(warn_on_invalid=warn_on_invalid)
 
 
-def get_status_from_process() -> AutoclearStatus:
-    """Public wrapper for deriving status from the detached process backend."""
-    return _get_status_from_process()
-
-
 def spawn_detached_process(*, interval_secs: int | None = None) -> int:
     """Public wrapper for detached startup using the shared cross-project adapter signature."""
     if interval_secs is None:
@@ -366,11 +363,16 @@ def spawn_detached_process(*, interval_secs: int | None = None) -> int:
     return _spawn_detached_process(interval_secs)
 
 
-def read_process_interval_seconds(process: psutil.Process) -> int | None:
-    """Public wrapper for reading the interval encoded into the autoclear worker process."""
-    return _read_interval_from_process(process)
-
-
 def stop_process(wait: bool = True) -> bool:
     """Public wrapper for stopping the autoclear background worker."""
     return _stop_process(wait=wait)
+
+
+def get_status_from_process() -> AutoclearStatus:
+    """Public wrapper for deriving status from the detached process backend."""
+    return _get_status_from_process()
+
+
+def read_process_interval_seconds(process: psutil.Process) -> int | None:
+    """Public wrapper for reading the interval encoded into the autoclear worker process."""
+    return _read_interval_from_process(process)

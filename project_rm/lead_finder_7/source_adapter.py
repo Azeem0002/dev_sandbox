@@ -66,6 +66,8 @@ def _build_lead_target(product: str, region: str, city: str | None, intent: Lead
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def fetch_public_lead_targets(request: LeadSearchRequest) -> list[LeadTarget]:
     """Build public buyer/seller lead targets for one product and region."""

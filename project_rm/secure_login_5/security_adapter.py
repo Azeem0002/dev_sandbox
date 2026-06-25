@@ -104,6 +104,8 @@ def _decode_access_token(token: str) -> dict:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def hash_password(password: str) -> str:
     """Public wrapper for password hashing."""

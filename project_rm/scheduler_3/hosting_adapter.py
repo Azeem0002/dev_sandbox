@@ -71,6 +71,8 @@ def _build_worker_command() -> list[str]:
 
 # ============================================
 # Public adapter API
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def get_hosting_profile() -> HostingProfile:
     """Return hosting metadata for docs, deployment scripts, or checks."""

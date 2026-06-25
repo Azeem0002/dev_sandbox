@@ -46,6 +46,8 @@ def _get_scheduler_status() -> SchedulerStatus:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def start_scheduler(job_func, *, interval_minutes: int) -> SchedulerStatus:
     """Public wrapper for starting recurring publishing checks."""

@@ -16,11 +16,10 @@ try:
         restart_autoclear,
         start_autoclear,
         stop_autoclear,
-        watch_autoclear,
     )
     from .lifecycle_models import AutoclearStatus
     from .runtime_adapter import is_dev_env, setup_environment, setup_logger
-    from .validation import format_duration_seconds, parse_interval
+    from .validation import format_duration_seconds
 except ImportError:
     from application import (
         get_autoclear_status,
@@ -28,11 +27,10 @@ except ImportError:
         restart_autoclear,
         start_autoclear,
         stop_autoclear,
-        watch_autoclear,
     )
     from lifecycle_models import AutoclearStatus
     from runtime_adapter import is_dev_env, setup_environment, setup_logger
-    from validation import format_duration_seconds, parse_interval
+    from validation import format_duration_seconds
 
 
 app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear controller")
@@ -41,6 +39,11 @@ app = typer.Typer(name="autoclear", help="Cross-platform terminal autoclear cont
 # ============================================
 # CLI - Thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. Typer receives raw terminal strings/options from the user.
+# 2. This file does only CLI responsibilities: setup, friendly errors, and printing.
+# 3. The application layer parses interval meaning and chooses process/systemd backend.
+# 4. The process/systemd adapters do OS work. Keep those side effects out of the CLI.
 @app.callback() # runs at app startup
 def init() -> None:
     """Initialize the runtime environment for this module."""
@@ -50,6 +53,8 @@ def init() -> None:
 
 def _format_autoclear_status(status: AutoclearStatus) -> str:
     """Format autoclear status."""
+    # Status is already a typed app model. The CLI's only job here is to turn
+    # that model into readable text for a human at the terminal.
     state = "running" if status.is_running else "stopped"
     parts = [f"Autoclear status: {state}", f"backend: {status.backend}"] # default variables
 
@@ -69,23 +74,30 @@ def _format_autoclear_status(status: AutoclearStatus) -> str:
     return " | ".join(parts)
 
 
+# Typer's Public API
+
 @app.command()
-def status() -> None:
+def status(system: bool = typer.Option(False, "--system", help="Check system-level service on Linux")) -> None:
     """Display the current status to the caller."""
-    typer.echo(_format_autoclear_status(get_autoclear_status()))
+    typer.echo(_format_autoclear_status(get_autoclear_status(system=system)))
 
 
 @app.command()
-def stop() -> None:
+def stop(system: bool = typer.Option(False, "--system", help="Stop system-level service on Linux")) -> None:
     """Stop the requested runtime path."""
-    typer.echo(stop_autoclear())
+    typer.echo(stop_autoclear(system=system))
 
 
 @app.command()
-def start(interval: str = typer.Option("1h", "--interval", "-i", help="Interval e.g. 1m, 5m, 2h")) -> None:
+def start(
+    interval: str = typer.Option("1h", "--interval", "-i", help="Interval e.g. 1m, 1h30m, 2h"),
+    system: bool = typer.Option(False, "--system", help="Start system-level service on Linux"),
+) -> None:
     """Start the requested runtime path."""
     try:
-        result = start_autoclear(interval)
+        # Pass raw user text down to the application. Do not parse it here;
+        # parse_interval lives below the boundary so CLI/API can share the rule.
+        result = start_autoclear(interval, system=system)
     except (ValueError, RuntimeError, OSError) as error:
         typer.echo(f"Error: {error}")
         raise typer.Exit(code=1)
@@ -95,30 +107,21 @@ def start(interval: str = typer.Option("1h", "--interval", "-i", help="Interval 
 
 
 @app.command()
-def restart(interval: str = typer.Option("1h", "--interval", "-i", help="New interval (e.g. 600, 2h 30m)")) -> None:
+def restart(
+    interval: str = typer.Option("1h", "--interval", "-i", help="New interval (e.g. 600, 2h 30m)"),
+    system: bool = typer.Option(False, "--system", help="Restart system-level service on Linux"),
+) -> None:
     """Restart the requested runtime path."""
     try:
-        result = restart_autoclear(interval)
+        # Restart follows the same boundary rule as start: CLI accepts text,
+        # application validates meaning, adapters perform process/service work.
+        result = restart_autoclear(interval, system=system)
     except (ValueError, RuntimeError, OSError) as error:
         typer.echo(f"Error: {error}")
         raise typer.Exit(code=1)
 
     time.sleep(1)
     typer.echo(result)
-
-
-@app.command()
-def watch(interval: str = typer.Option("1m", "--interval", "-i", help="Interval e.g. 1m, 5m, 2h")) -> None:
-    """Clear the current terminal from a foreground loop."""
-    try:
-        interval_label = format_duration_seconds(parse_interval(interval))
-        typer.echo(f"Autoclear watch running in this terminal with interval {interval_label}. Press Ctrl+C to stop.")
-        watch_autoclear(interval)
-    except KeyboardInterrupt:
-        typer.echo("Autoclear watch stopped")
-    except (ValueError, RuntimeError, OSError) as error:
-        typer.echo(f"Error: {error}")
-        raise typer.Exit(code=1)
 
 
 @app.command("install-service")
@@ -126,7 +129,7 @@ def install_service(
     interval: str = typer.Option("1h", "--interval", "-i", help="Interval e.g. 1m, 5m, 2h"),
     system: bool = typer.Option(False, "--system", help="Install as system-level service on Linux"),
 ) -> None:
-    """Install service."""
+    """Install or update service."""
     try:
         message, steps = install_autoclear_service(interval=interval, system=system)
     except (ValueError, RuntimeError) as error:

@@ -33,6 +33,13 @@ app = typer.Typer(
 # ============================================
 # CLI - Thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. Typer receives paths/options/confirmations from the human.
+# 2. This file handles human interaction: prompts, confirmations, and terminal output.
+# 3. Validation converts unsafe/raw CLI input into trusted input models.
+# 4. Application/services perform the actual organize/backup/restore work.
+# 5. Keep filesystem business rules out of the CLI so the same use-cases can
+#    later be called from an API, GUI, or test without reusing terminal code.
 @app.callback()
 def init() -> None:
     """Initialize the runtime environment for this module."""
@@ -42,6 +49,8 @@ def init() -> None:
 
 def _get_validated_value[T](validation: Validated[T], context: str = "") -> T:
     """Bridge structured validation results into CLI output + exit behavior."""
+    # Validation returns data plus errors; Typer expects us to either print a
+    # message and exit, or return a clean value to the command handler.
     if validation.is_invalid:
         typer.echo(f"{context or 'Validation'} failed:")
         for error in validation.errors:
@@ -56,6 +65,8 @@ def _get_validated_value[T](validation: Validated[T], context: str = "") -> T:
 
 def _prompt_for_conflict_strategy() -> ConflictStrategy:
     """Interactive boundary helper for choosing how duplicate files should be handled."""
+    # This is boundary code because it asks a human what to do. The lower layers
+    # should receive ConflictStrategy.SKIP/RENAME/etc, not prompt text like "1".
     typer.echo("\nConflict Resolution Strategy")
     typer.echo("1. Skip duplicates")
     typer.echo("2. Rename duplicates")
@@ -148,6 +159,9 @@ def organize(
 ) -> None:
     """Organize."""
     try:
+        # INPUT -> PARSE/CLEAN: turn CLI options into a typed model before
+        # orchestration starts. From this point down, use-cases should not care
+        # whether input came from a terminal, API, or future GUI.
         conflict_strategy = _resolve_conflict_strategy(strategy, interactive)
         backup = _confirm_destructive_organize_strategy(conflict_strategy, dry_run, backup)
         organize_input = OrganizeFilesInput(

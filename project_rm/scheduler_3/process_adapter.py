@@ -189,6 +189,8 @@ def _stop_process(wait: bool = True) -> bool:
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Process adapters expose low-level PID/process wrappers first, then lifecycle
+# workflow functions: check active PID, start detached process, stop, then read status.
 def get_pid_file_path() -> Path:
     """Public wrapper for the scheduler PID file location."""
     return _get_pid_file_path()
@@ -231,11 +233,11 @@ def spawn_detached_process(*, interval_secs: int | None = None) -> int:
     return _spawn_detached_process()
 
 
-def read_process_interval_seconds(process: psutil.Process) -> int | None:
-    """Public wrapper for interval inspection; scheduler always returns `None` here."""
-    return _read_interval_from_process(process)
-
-
 def stop_process(wait: bool = True) -> bool:
     """Public wrapper for stopping the scheduler background process."""
     return _stop_process(wait=wait)
+
+
+def read_process_interval_seconds(process: psutil.Process) -> int | None:
+    """Public wrapper for interval inspection; scheduler always returns `None` here."""
+    return _read_interval_from_process(process)

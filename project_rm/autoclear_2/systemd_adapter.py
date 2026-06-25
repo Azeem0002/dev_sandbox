@@ -41,7 +41,6 @@ def _get_systemd_user_dir() -> Path:
     """Return the per-user systemd unit directory on Linux."""
     return Path.home() / ".config/systemd/user"
 
-
 def _run_system_command(command: list[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run one external OS command and capture stdout/stderr for adapter-level decisions."""
     return subprocess.run(
@@ -153,6 +152,13 @@ def _install_systemd_system(service_content: str, timer_content: str) -> tuple[P
     return service_path, timer_path
 
 
+def _reload_systemd(*, system: bool) -> None:
+    """Ask systemd to re-read unit files after install/update."""
+    reload_result = _run_systemctl(["daemon-reload"], system=system)
+    if reload_result.returncode != 0:
+        raise RuntimeError(reload_result.stderr.strip() or "systemctl daemon-reload failed")
+
+
 def _is_systemd_timer_installed(*, system: bool) -> bool:
     """Return whether systemd can see and parse the timer unit file."""
     return _read_systemd_property(SYSTEMD_TIMER_NAME, "LoadState", system=system) == "loaded"
@@ -168,6 +174,10 @@ def _is_systemd_backend_installed(*, system: bool) -> bool:
 def _get_status_from_systemd(*, system: bool) -> AutoclearStatus:
     """Summarize the installed timer/service state into one app-facing status model."""
     # Read raw unit properties once here so the rest of the app can consume one typed status object.
+    # systemd exposes structured properties, so this adapter can ask for exact fields
+    # instead of scraping human-facing text. Autoclear uses a timer plus a oneshot
+    # service: the timer answers schedule questions, and the service answers worker
+    # execution questions.
     if not _is_systemd_backend_installed(system=system):
         # This factory stays in the adapter because "systemd timer not installed"
         # is infrastructure knowledge, not a generic model rule.
@@ -246,35 +256,39 @@ def _stop_with_systemd(*, system: bool) -> str:
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Public functions use lifecycle workflow order: check installed state, install/update,
+# start, stop, then read status. This matches how an operator thinks about a service.
+def is_systemd_service_installed(*, system: bool = False) -> bool:
+    """Report whether the autoclear systemd service/timer backend is installed."""
+    return _is_systemd_backend_installed(system=system)
+
+
 def install_systemd_service(*, interval_secs: int, system: bool = False) -> tuple[str, list[str]]:
-    """Install the autoclear systemd service/timer pair."""
+    """Install or update the autoclear systemd service/timer pair."""
     service_content = _build_systemd_service(system=system)
     timer_content = _build_systemd_timer(interval_secs)
 
     if system:
         service_path, timer_path = _install_systemd_system(service_content, timer_content)
+        _reload_systemd(system=system)
         return (
-            f"Installed system service at {service_path} and timer at {timer_path}",
+            f"Installed/updated system service at {service_path} and timer at {timer_path}",
             [
-                "sudo systemctl daemon-reload",
-                "Then run `autoclear start` to enable and start the installed timer.",
+                "Then run `autoclear start --system` to enable/start the installed timer.",
+                "Rerun install-service with a new interval to update the timer.",
             ],
         )
 
     service_path, timer_path = _install_systemd_user(service_content, timer_content)
+    _reload_systemd(system=system)
     return (
-        f"Installed user service at {service_path} and timer at {timer_path}",
+        f"Installed/updated user service at {service_path} and timer at {timer_path}",
         [
-            "systemctl --user daemon-reload",
             f"loginctl enable-linger {getpass.getuser()}",
             "Then run `autoclear start` to enable and start the installed timer.",
+            "Rerun install-service with a new interval to update the timer.",
         ],
     )
-
-
-def is_systemd_service_installed(*, system: bool = False) -> bool:
-    """Report whether the autoclear systemd service/timer backend is installed."""
-    return _is_systemd_backend_installed(system=system)
 
 
 def start_systemd_service(*, interval_secs: int | None = None, system: bool = False) -> str:

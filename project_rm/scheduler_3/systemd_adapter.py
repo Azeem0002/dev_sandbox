@@ -126,9 +126,24 @@ def _install_systemd_system(service_content: str) -> Path:
     return service_path
 
 
+def _reload_systemd(*, system: bool) -> None:
+    """Ask systemd to re-read unit files after install/update."""
+    reload_result = _run_systemctl(["daemon-reload"], system=system)
+    if reload_result.returncode != 0:
+        raise RuntimeError(reload_result.stderr.strip() or "systemctl daemon-reload failed")
+
+
 def _is_systemd_service_installed(*, system: bool) -> bool:
     """Return whether systemd can see and parse the service unit file."""
     return _read_systemd_property(SYSTEMD_SERVICE_NAME, "LoadState", system=system) == "loaded"
+
+
+def _get_systemd_service_status(*, system: bool) -> str | None:
+    """Return the scheduler systemd service active state."""
+    # systemd exposes structured properties, so this adapter can ask for exact fields
+    # instead of scraping human-facing text. Scheduler uses one long-running service,
+    # so ActiveState is enough to answer the public status question.
+    return _read_systemd_property(SYSTEMD_SERVICE_NAME, "ActiveState", system=system)
 
 
 def _start_with_systemd(*, system: bool) -> str:
@@ -169,34 +184,38 @@ def _stop_with_systemd(*, system: bool) -> str:
 # ============================================
 # Public adapter API - stable reusable surface
 # ============================================
+# Public functions use lifecycle workflow order: check installed state, install/update,
+# start, stop, then read status. This matches how an operator thinks about a service.
+def is_systemd_service_installed(*, system: bool = False) -> bool:
+    """Report whether the scheduler systemd service is installed."""
+    return _is_systemd_service_installed(system=system)
+
+
 def install_systemd_service(*, system: bool = False) -> tuple[str, list[str]]:
-    """Install the scheduler systemd service."""
+    """Install or update the scheduler systemd service."""
     service_content = _build_systemd_service(system=system)
 
     if system:
         service_path = _install_systemd_system(service_content)
+        _reload_systemd(system=system)
         return (
-            f"Installed system service at {service_path}",
+            f"Installed/updated system service at {service_path}",
             [
-                "sudo systemctl daemon-reload",
-                "Then run `scheduler start` to enable and start the installed service.",
+                "Then run `scheduler start --system` to enable/start the installed service.",
+                "Rerun install with updated code/config to refresh the service unit.",
             ],
         )
 
     service_path = _install_systemd_user(service_content)
+    _reload_systemd(system=system)
     return (
-        f"Installed user service at {service_path}",
+        f"Installed/updated user service at {service_path}",
         [
-            "systemctl --user daemon-reload",
             f"loginctl enable-linger {getpass.getuser()}",
             "Then run `scheduler start` to enable and start the installed service.",
+            "Rerun install with updated code/config to refresh the service unit.",
         ],
     )
-
-
-def is_systemd_service_installed(*, system: bool = False) -> bool:
-    """Report whether the scheduler systemd service is installed."""
-    return _is_systemd_service_installed(system=system)
 
 
 def start_systemd_service(*, system: bool = False) -> str:
@@ -207,3 +226,8 @@ def start_systemd_service(*, system: bool = False) -> str:
 def stop_systemd_service(*, system: bool = False) -> str:
     """Stop the installed scheduler systemd backend."""
     return _stop_with_systemd(system=system)
+
+
+def get_systemd_service_status(*, system: bool = False) -> str | None:
+    """Return scheduler status from the Linux systemd backend."""
+    return _get_systemd_service_status(system=system)

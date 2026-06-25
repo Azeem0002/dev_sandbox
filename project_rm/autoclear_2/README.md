@@ -41,7 +41,6 @@ Input -> Validate interval -> Detect platform -> Start/stop/status backend -> Lo
 - Let application choose backend, not the CLI
 - Keep process adapter responsible only for process lifecycle
 - Use `start/status/stop` for the non-blocking background autoclear workflow.
-- Use `watch` only as a foreground debugging/fallback mode.
 
 ## Study Order
 1. `autoclear.py`
@@ -58,7 +57,6 @@ Input -> Validate interval -> Detect platform -> Start/stop/status backend -> Lo
 uv run --project .. python autoclear_2/controller.py start -i 1m
 uv run --project .. python autoclear_2/controller.py status
 uv run --project .. python autoclear_2/controller.py stop
-uv run --project .. python autoclear_2/controller.py watch -i 1m
 ```
 
 ## Developer Contact

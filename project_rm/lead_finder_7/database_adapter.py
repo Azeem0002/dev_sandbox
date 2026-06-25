@@ -139,6 +139,8 @@ def _fetch_recent_runs(limit: int = 20) -> list[LeadRun]:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def get_db_path() -> Path:
     """Return the database file path."""

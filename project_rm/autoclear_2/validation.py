@@ -46,6 +46,8 @@ def parse_interval(value: int | str) -> int:
 
 def format_duration_seconds(seconds: int | None) -> str:
     """Format seconds as machine value plus a small human-friendly label."""
+    # is not parsing. It is only display formatting for status/start messages:
+    # e.g: 60 -> 60s (1m), 3600 -> 3600s (1h)
     if seconds is None:
         return "unknown"
     if seconds % 86400 == 0:

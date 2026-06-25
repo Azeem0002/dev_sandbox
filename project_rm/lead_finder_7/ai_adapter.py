@@ -51,6 +51,8 @@ def _enrich_lead(target: LeadTarget) -> LeadTarget:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def rank_leads(targets: list[LeadTarget]) -> list[LeadTarget]:
     """Score and sort lead targets strongest first."""

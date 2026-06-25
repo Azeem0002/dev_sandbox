@@ -62,7 +62,7 @@ try:
         write_pid_file,
     )
     from .runtime_adapter import get_local_timezone, is_dev_env, setup_environment, setup_logger
-    from .service_adapter import install_service
+    from .service_adapter import get_service_status, install_service, start_service, stop_service
 except ImportError:
     from database_adapter import (
         init_db,
@@ -92,7 +92,7 @@ except ImportError:
         write_pid_file,
     )
     from runtime_adapter import get_local_timezone, is_dev_env, setup_environment, setup_logger
-    from service_adapter import install_service
+    from service_adapter import get_service_status, install_service, start_service, stop_service
 
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -563,6 +563,12 @@ def _format_started_at(value: datetime | None) -> str:
 # ============================================
 # CLI - Thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. Typer receives raw job details from command flags or interactive prompts.
+# 2. CLI helpers parse one field at a time so errors stay user-friendly.
+# 3. The application layer receives typed job requests and owns use-case flow.
+# 4. Database, process, systemd, and task scheduler details stay in adapters.
+# 5. The CLI prints status/tables; it should not decide persistence or backend rules.
 
 try:
     from .application import (
@@ -849,11 +855,19 @@ def list_command(verbose: bool = typer.Option(False, "--verbose", "-v")):
 
 @app.command()
 def start(
-    foreground: bool = typer.Option(False, "--foreground", "-f", help="Run scheduler in foreground")
+    foreground: bool = typer.Option(False, "--foreground", "-f", help="Run scheduler in foreground"),
+    system: bool = typer.Option(False, "--system", "-s", help="Start system-level service on Linux"),
 ):
     """Start the scheduler daemon"""
     
     try:
+        if foreground and system:
+            raise ValueError("--foreground and --system cannot be used together")
+
+        if system:
+            typer.echo(f"✓ {start_service(system=system)}")
+            return RunMode.BACKGROUND
+
         mode = RunMode.FOREGROUND if foreground else RunMode.BACKGROUND
 
         message = start_scheduler(foreground) # Always define variables before branches, not inside them
@@ -874,15 +888,21 @@ def start(
                 )
         
         return mode
-    except (RuntimeError, OSError) as e:
+    except (ValueError, RuntimeError, OSError) as e:
         typer.echo(f"✗ {e}", err=True)
         raise typer.Exit(1)
 
     
 @app.command()
-def stop():
+def stop(
+    system: bool = typer.Option(False, "--system", "-s", help="Stop system-level service on Linux"),
+):
     """Stop the scheduler daemon"""
     try:
+        if system:
+            typer.echo(f"✓ {stop_service(system=system)}")
+            return
+
         stopped = stop_scheduler()
         if stopped:
             typer.echo("✓ Scheduler stopped")
@@ -894,9 +914,22 @@ def stop():
 
 
 @app.command()
-def status():
+def status(
+    system: bool = typer.Option(False, "--system", "-s", help="Check system-level service on Linux"),
+):
     """Show scheduler process status"""
     try:
+        if system:
+            service_status = get_service_status(system=system)
+            typer.echo(f"Scheduler service status: {service_status or 'not installed'}")
+            scheduler_status = get_scheduler_status()
+            typer.echo(
+                f"Jobs: {scheduler_status.total_jobs} total | "
+                f"{scheduler_status.active_jobs} active | "
+                f"{scheduler_status.paused_jobs} paused"
+            )
+            return
+
         scheduler_status = get_scheduler_status()
 
         if not scheduler_status.is_running:
@@ -989,7 +1022,7 @@ def resume(
 def install(
     system: bool = typer.Option(False, "--system", "-s", help="System-wide install (requires sudo on Linux)")
 ):
-    """Install scheduler as background service"""
+    """Install or update scheduler as background service"""
     try:
         platform = _detect_platform()
         

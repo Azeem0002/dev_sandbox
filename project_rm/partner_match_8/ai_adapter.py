@@ -30,6 +30,8 @@ def _build_group_agent_reply(group: PartnerGroup, recent_messages: list[ChatMess
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def build_group_agent_reply(group: PartnerGroup, recent_messages: list[ChatMessage]) -> str:
     """Public wrapper for generating an AI teammate response."""

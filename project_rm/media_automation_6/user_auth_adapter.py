@@ -39,6 +39,8 @@ def _require_authenticated_user(authorization: str | None) -> dict:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def require_authenticated_user(authorization: str | None) -> dict:
     """Public wrapper used by API routes before protected work starts."""

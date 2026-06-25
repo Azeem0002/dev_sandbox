@@ -7,12 +7,14 @@ from pydantic import BaseModel
 try:
     from .application import export_saved_campaign, get_campaign_history, recommend_campaign
     from .database_adapter import init_db
+    from .interface_adapter import get_frontend_contract
     from .runtime_adapter import setup_environment, setup_logger
     from .user_auth_adapter import require_authenticated_user
     from .validation import build_campaign_request
 except ImportError:
     from application import export_saved_campaign, get_campaign_history, recommend_campaign
     from database_adapter import init_db
+    from interface_adapter import get_frontend_contract
     from runtime_adapter import setup_environment, setup_logger
     from user_auth_adapter import require_authenticated_user
     from validation import build_campaign_request
@@ -37,6 +39,12 @@ app = FastAPI(title="adbot_9", version="0.1.0")
 # ============================================
 # API boundary - thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. FastAPI receives product, region/city, budget, and platform from clients.
+# 2. The API boundary requires login before user-owned campaign work.
+# 3. validation.py converts raw JSON into a CampaignRequest.
+# 4. application.py coordinates demand, AI copy, persistence, and export adapters.
+# 5. Mapper helpers return stable JSON for any frontend: web, mobile, or desktop.
 @app.on_event("startup")
 def startup() -> None:
     """Prepare runtime logging and database before serving requests."""
@@ -47,6 +55,8 @@ def startup() -> None:
 
 def _signal_to_dict(item) -> dict:
     """Convert one demand signal model into API-safe JSON."""
+    # Demand signals are internal dataclasses. API clients need simple JSON:
+    # strings for enum/date fields and numbers for scores.
     return {
         "product": item.product,
         "region": item.region,
@@ -103,10 +113,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/frontend-contract")
+def frontend_contract() -> dict:
+    """Return the stable API handoff contract for web/mobile/desktop clients."""
+    return get_frontend_contract()
+
+
 @app.post("/campaigns/recommend")
 def recommend(payload: CampaignRecommendPayload, authorization: str | None = Header(default=None)) -> dict:
     """Recommend target locations and ad copy for one product."""
     try:
+        # INPUT -> PARSE/CLEAN -> DECIDE/SAVE -> PRESENT:
+        # raw payload becomes CampaignRequest, then application returns a plan.
         _require_user(authorization)
         request = build_campaign_request(
             product=payload.product,

@@ -34,6 +34,16 @@ backend API without backend rewrites. Keep frontend clients platform-specific
 only at the UI layer.
 ```
 
+Frontend contract decision:
+
+```text
+API projects expose `/frontend-contract` through `interface_adapter.py`.
+This is the handoff document for frontend developers: base URL, auth header,
+stable routes, required JSON headers, and errors the GUI must handle.
+The GUI can be React, mobile, desktop, or replaced later without moving business
+logic out of application/core/adapters.
+```
+
 User-auth decision:
 
 ```text
@@ -72,10 +82,22 @@ uv run --project .. python organizer_1/organizer.py backup /path/to/folder --lis
 ```bash
 uv run --project .. python autoclear_2/controller.py --help
 uv run --project .. python autoclear_2/controller.py status
-uv run --project .. python autoclear_2/controller.py watch --interval 1m
-uv run --project .. python autoclear_2/controller.py start --interval 1m
+uv run --project .. python autoclear_2/controller.py start or start--interval 1m
 uv run --project .. python autoclear_2/controller.py stop
 uv run --project .. python autoclear_2/autoclear.py --once
+```
+
+Optional native service install/update:
+
+```bash
+uv run --project .. python autoclear_2/controller.py install-service --interval 1m
+uv run --project .. python autoclear_2/controller.py install-service --interval 5m
+uv run --project .. python autoclear_2/controller.py install-service --interval 1m --system
+uv run --project .. python autoclear_2/controller.py start --interval 1m
+uv run --project .. python autoclear_2/controller.py status
+uv run --project .. python autoclear_2/controller.py start --interval 1m --system
+uv run --project .. python autoclear_2/controller.py status --system
+uv run --project .. python autoclear_2/controller.py stop --system
 ```
 
 ## Scheduler
@@ -85,8 +107,13 @@ uv run --project .. python scheduler_3/scheduler.py --help
 uv run --project .. python scheduler_3/scheduler.py add --interactive
 uv run --project .. python scheduler_3/scheduler.py list
 uv run --project .. python scheduler_3/scheduler.py status
+uv run --project .. python scheduler_3/scheduler.py status --system
 uv run --project .. python scheduler_3/scheduler.py start
+uv run --project .. python scheduler_3/scheduler.py start --system
 uv run --project .. python scheduler_3/scheduler.py stop
+uv run --project .. python scheduler_3/scheduler.py stop --system
+uv run --project .. python scheduler_3/scheduler.py install
+uv run --project .. python scheduler_3/scheduler.py install --system
 uv run --project .. python -c "from scheduler_3.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 ```
 
@@ -117,6 +144,7 @@ Optional API boundary:
 uv run --project .. uvicorn scraper_4.api:app --reload
 uv run --project .. python -c "from scraper_4.hosting_adapter import get_hosting_profile, build_host_command; print(get_hosting_profile()); print(build_host_command())"
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/trends -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"mode":"products","keyword":"laptop","region":"US","city":"New York","max_results":5}'
 curl -X POST http://127.0.0.1:8000/scrape -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"url":"https://example.com","mode":"products","max_results":5}'
 ```
@@ -134,6 +162,7 @@ Common checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/register -H "Content-Type: application/json" -d '{"email":"az@example.com","password":"Password123"}'
 curl -X POST http://127.0.0.1:8000/login -H "Content-Type: application/json" -d '{"email":"az@example.com","password":"Password123"}'
 curl -X POST http://127.0.0.1:8000/auth/google -H "Content-Type: application/json" -d '{"id_token":"dev:az@example.com"}'
@@ -153,6 +182,7 @@ Common checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/generate -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
 curl -X POST http://127.0.0.1:8000/posts -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"topic":"AI tools for solo developers","platform":"linkedin","tone":"practical","audience":"solo founders","goal":"teach one useful lesson"}'
 curl -X POST http://127.0.0.1:8000/automation/start -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"interval_minutes":"30m","dry_run":true}'
@@ -172,6 +202,7 @@ Common checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/leads -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"product":"phone accessories","region":"NG","city":"Lagos","intent":"both","max_results":6}'
 curl http://127.0.0.1:8000/history -H "Authorization: Bearer TOKEN_HERE"
 ```
@@ -189,6 +220,7 @@ Common checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/auth/google -H "Content-Type: application/json" -d '{"id_token":"dev:az@example.com"}'
 curl http://127.0.0.1:8000/me -H "Authorization: Bearer TOKEN_HERE"
 curl -X PUT http://127.0.0.1:8000/me/username -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"username":"az_builder"}'
@@ -228,6 +260,7 @@ Common checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/frontend-contract
 curl -X POST http://127.0.0.1:8000/campaigns/recommend -H "Authorization: Bearer TOKEN_HERE" -H "Content-Type: application/json" -d '{"product":"phone accessories","region":"NG","cities":["Lagos","Abuja"],"platform":"meta","goal":"sales","audience":"local smartphone users","daily_budget":20,"max_locations":3}'
 curl http://127.0.0.1:8000/campaigns/history -H "Authorization: Bearer TOKEN_HERE"
 curl http://127.0.0.1:8000/campaigns/PLAN_ID/export -H "Authorization: Bearer TOKEN_HERE"

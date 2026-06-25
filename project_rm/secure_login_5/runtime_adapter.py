@@ -60,6 +60,8 @@ def _setup_logger(file_log: Path) -> None:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def get_platform_dirs() -> PlatformDirs:
     """Public wrapper for resolving app-owned platform directories."""

@@ -7,12 +7,14 @@ from pydantic import BaseModel
 try:
     from .application import generate_post_idea, get_automation_status, list_posts, publish_due_posts, publish_one_post, schedule_post, start_automation, stop_automation
     from .database_adapter import init_db
+    from .interface_adapter import get_frontend_contract
     from .runtime_adapter import setup_environment, setup_logger
     from .user_auth_adapter import require_authenticated_user
     from .validation import build_content_idea_request, build_schedule_request, normalize_interval_minutes
 except ImportError:
     from application import generate_post_idea, get_automation_status, list_posts, publish_due_posts, publish_one_post, schedule_post, start_automation, stop_automation
     from database_adapter import init_db
+    from interface_adapter import get_frontend_contract
     from runtime_adapter import setup_environment, setup_logger
     from user_auth_adapter import require_authenticated_user
     from validation import build_content_idea_request, build_schedule_request, normalize_interval_minutes
@@ -44,6 +46,12 @@ app = FastAPI(title="media_automation_6", version="0.1.0")
 # ============================================
 # API boundary - thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. FastAPI receives HTTP payloads for generation, scheduling, and automation.
+# 2. Boundary code authenticates the caller and translates HTTP errors.
+# 3. validation.py normalizes platform/tone/time fields into app request models.
+# 4. application.py coordinates AI, DB, scheduler, and social adapters.
+# 5. Response mappers keep API output JSON-safe and stable for frontends.
 @app.on_event("startup")
 def startup() -> None:
     """Prepare runtime logging and database before serving requests."""
@@ -54,6 +62,8 @@ def startup() -> None:
 
 def _post_to_dict(post) -> dict:
     """Convert one post model into API-safe JSON."""
+    # API clients should not need to know Python enum/datetime objects.
+    # This mapper presents stable JSON fields for web/mobile/desktop clients.
     return {
         "id": post.id,
         "platform": post.platform.value,
@@ -84,10 +94,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/frontend-contract")
+def frontend_contract() -> dict:
+    """Return the stable API handoff contract for web/mobile/desktop clients."""
+    return get_frontend_contract()
+
+
 @app.post("/generate")
 def generate(payload: GeneratePayload, authorization: str | None = Header(default=None)) -> dict[str, str]:
     """Generate a social media post draft."""
     try:
+        # The boundary accepts friendly text; the app layer receives a clean
+        # ContentIdeaRequest so generation can be reused outside HTTP.
         _require_user(authorization)
         request = build_content_idea_request(topic=payload.topic, platform=payload.platform, tone=payload.tone, audience=payload.audience, goal=payload.goal)
         return {"content": generate_post_idea(request)}
@@ -134,6 +152,8 @@ def publish_due(dry_run: bool = True, authorization: str | None = Header(default
 def automation_start(payload: AutomationPayload, authorization: str | None = Header(default=None)) -> dict:
     """Start recurring background publishing checks."""
     try:
+        # Time parsing belongs before orchestration so scheduler logic receives
+        # plain minutes, not mixed strings like "30m" or integers from JSON.
         _require_user(authorization)
         interval_minutes = normalize_interval_minutes(payload.interval_minutes)
         status = start_automation(interval_minutes=interval_minutes, dry_run=payload.dry_run)

@@ -40,6 +40,8 @@ def _publish_with_token(post: SocialPost, token: str) -> PublishResult:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def publish_post(post: SocialPost, *, dry_run: bool = True) -> PublishResult:
     """Publish one post or simulate publishing when dry_run is enabled."""

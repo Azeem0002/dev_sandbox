@@ -46,6 +46,7 @@ try:
         view_profile,
     )
     from .database_adapter import init_db
+    from .interface_adapter import get_frontend_contract
     from .models import AddGroupMemberDTO, BlockUserDTO, CommentInputDTO, CreateGroupDTO, CreateGroupInviteDTO, GoogleLoginDTO, LocationInputDTO, MessageInputDTO, PartnerRequestInputDTO, PartnerRequestStatus, ProfileInputDTO, PublicPostInputDTO, ReportInputDTO, TokenDTO, User, UsernameInputDTO
     from .runtime_adapter import setup_environment, setup_logger
     from .validation import build_block_input, build_comment_input, build_group_input, build_invite_input, build_location_input, build_member_input, build_message_input, build_partner_request_input, build_profile_input, build_public_post_input, build_report_input, build_username_input
@@ -90,6 +91,7 @@ except ImportError:
         view_profile,
     )
     from database_adapter import init_db
+    from interface_adapter import get_frontend_contract
     from models import AddGroupMemberDTO, BlockUserDTO, CommentInputDTO, CreateGroupDTO, CreateGroupInviteDTO, GoogleLoginDTO, LocationInputDTO, MessageInputDTO, PartnerRequestInputDTO, PartnerRequestStatus, ProfileInputDTO, PublicPostInputDTO, ReportInputDTO, TokenDTO, User, UsernameInputDTO
     from runtime_adapter import setup_environment, setup_logger
     from validation import build_block_input, build_comment_input, build_group_input, build_invite_input, build_location_input, build_member_input, build_message_input, build_partner_request_input, build_profile_input, build_public_post_input, build_report_input, build_username_input
@@ -101,6 +103,12 @@ app = FastAPI(title="partner_match_8", version="0.1.0")
 # ============================================
 # API boundary - thin wrapper around orchestration
 # ============================================
+# Boundary mental model:
+# 1. FastAPI receives social/location/group/chat payloads from clients.
+# 2. The boundary extracts bearer tokens and turns auth failures into 401s.
+# 3. validation.py converts raw DTOs into clean app-level inputs.
+# 4. application.py enforces product rules: safety, group size, roles, feed, etc.
+# 5. Response helpers flatten models into JSON for web/mobile/desktop frontends.
 @app.on_event("startup")
 def startup() -> None:
     """Prepare runtime logging and database before serving requests."""
@@ -121,6 +129,8 @@ def _auth_error(error: Exception) -> HTTPException:
 
 def _extract_bearer_token(authorization: str | None) -> str:
     """Read a bearer token from the Authorization header."""
+    # Header parsing is a boundary concern. Token verification stays in the
+    # application/security layer so other boundaries can reuse it.
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Log in and send Authorization: Bearer <token>")
     token = authorization.split(" ", 1)[1].strip()
@@ -131,6 +141,8 @@ def _extract_bearer_token(authorization: str | None) -> str:
 
 def _current_user(authorization: str | None) -> User:
     """Load the current user for protected endpoints."""
+    # Most routes need the logged-in user. Keeping this helper small makes the
+    # protected-route pattern easy to recognize throughout the file.
     try:
         return get_current_user(_extract_bearer_token(authorization))
     except ValueError as error:
@@ -189,6 +201,12 @@ def _nearby_to_dict(partner) -> dict:
 def health() -> dict[str, str]:
     """Return a small liveness response."""
     return {"status": "ok"}
+
+
+@app.get("/frontend-contract")
+def frontend_contract() -> dict:
+    """Return the stable API handoff contract for web/mobile/desktop clients."""
+    return get_frontend_contract()
 
 
 @app.post("/auth/google", response_model=TokenDTO)

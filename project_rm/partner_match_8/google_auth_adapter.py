@@ -70,6 +70,8 @@ def _verify_google_id_token(id_token: str) -> GoogleIdentity:
 
 # ============================================
 # Public adapter API - stable reusable surface
+# Responsibility-order adapters are grouped by the job they do, not by install/start/stop lifecycle.
+# Read them as: prepare inputs -> call the outside system -> map results back to app-safe data.
 # ============================================
 def verify_google_id_token(id_token: str) -> GoogleIdentity:
     """Public wrapper for Google ID token verification."""
